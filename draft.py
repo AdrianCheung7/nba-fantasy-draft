@@ -82,3 +82,51 @@ def feasible(b, mine, cand, settings):
             continue
         out.append(c)
     return out
+
+
+TOP_K = 60  # ponytail: only the best 60 legal players are scored; ample for 8-20 teams
+
+# ponytail: coefficients are knobs; sim.py measures which strategy actually wins
+STRATEGIES = {
+    "greedy": lambda c, ctx: c.marginal,
+    "durable": lambda c, ctx: c.marginal * np.sqrt(c.avail),
+    "low_variance": lambda c, ctx: c.marginal - 2 * c.sd * np.sqrt(c.gp),
+    "playoffs": lambda c, ctx: c.marginal + 2 * c.marginal_po,
+    "ir_early": lambda c, ctx: c.marginal * np.where(c.ir_ok & ctx["ir_open"], 1.3, 1.0),
+}
+
+
+def recommend(b, ev, mine, taken, settings, strategy="greedy", po_mask=None, k=TOP_K):
+    mine = list(mine)
+    n_start = len(starters(settings))
+    free = b[~b.index.isin(list(taken) + mine)].sort_values("season_fp", ascending=False).index
+    cand = []
+    for c in free:  # best-first until k legal players
+        if feasible(b, mine, [c], settings):
+            cand.append(c)
+            if len(cand) == k:
+                break
+    cand = cand or list(free[:k])  # nothing legal (e.g. no IR-eligible left): best available
+    out = b.loc[cand].copy()
+    rosters = [mine + [c] for c in cand]
+    out["marginal"] = team_value(ev[rosters], n_start) - team_value(ev[mine], n_start)
+    if po_mask is None:
+        out["marginal_po"] = 0.0
+    else:
+        evp = ev[:, po_mask]
+        out["marginal_po"] = team_value(evp[rosters], n_start) - team_value(evp[mine], n_start)
+    ctx = {"ir_open": settings["slots"].get("IR", 0) > int(b.ir_ok.values[mine].sum())}
+    out["score"] = STRATEGIES[strategy](out, ctx)
+    return out.sort_values("score", ascending=False)
+
+
+def survive(b, cand, taken, n_picks, rng, sims=200):
+    """P(candidate still on the board at my next pick); opponents take by noisy season value."""
+    if n_picks is None:
+        return pd.Series(0.0, index=cand)
+    free = b[~b.index.isin(list(taken))]
+    pool = free.nlargest(len(cand) + 3 * n_picks + 10, "season_fp")
+    noisy = pool.season_fp.values * rng.lognormal(0, 0.15, (sims, len(pool)))
+    hit = np.zeros(noisy.shape, bool)
+    np.put_along_axis(hit, np.argsort(-noisy, axis=1)[:, :n_picks], True, axis=1)
+    return pd.Series(1 - hit.mean(axis=0), index=pool.index).reindex(cand).fillna(1.0)

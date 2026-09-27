@@ -75,3 +75,55 @@ def test_feasible_starter_coverage():
     b = make_board([(30, "C|PF/C|UTIL", "ACTIVE", 1), (25, "C|PF/C|UTIL", "ACTIVE", 1),
                     (10, "G|UTIL", "ACTIVE", 1)], s)
     assert feasible(b, [0], [1, 2], s) == [2]
+
+
+from draft import STRATEGIES, recommend, survive
+
+ROWS = [(30, "C|PF/C|UTIL|BE|IR", "ACTIVE", 1), (20, "G|UTIL|BE|IR", "ACTIVE", 1), (10, "G|UTIL|BE|IR", "ACTIVE", 2)]
+
+
+def rec(rows, mine=(), taken=(), strategy="greedy", settings=LEAGUE, po_mask=None):
+    b = make_board(rows, settings)
+    G, _ = day_matrix(b, SCHED)
+    return recommend(b, ev_matrix(b, G), list(mine), set(taken), settings, strategy, po_mask)
+
+
+def test_recommend_ranks_and_excludes_taken_and_none():
+    r = rec(ROWS, taken={0, None})
+    assert list(r.index) == [1, 2]
+    assert r.marginal.iloc[0] == 40  # 20 pts x 2 game days
+
+
+def test_recommend_falls_back_when_nothing_legal():
+    s = {"slots": {"UTIL": 1, "IR": 1}, "rounds": 2, "scoring": {"PTS": 1}}
+    r = rec([(30, "UTIL|IR", "ACTIVE", 1), (20, "UTIL|IR", "ACTIVE", 1)], mine=[0], settings=s)
+    assert list(r.index) == [1]
+
+
+def test_ir_early_boosts_injured_player():
+    rows = [(20, "UTIL|BE|IR", "ACTIVE", 1), (18, "UTIL|BE|IR", "OUT", 1)]
+    assert rec(rows).index[0] == 0
+    assert rec(rows, strategy="ir_early").index[0] == 1
+
+
+def test_playoffs_strategy_prefers_playoff_days():
+    rows = [(10, "UTIL|BE", "ACTIVE", 1), (10, "UTIL|BE", "ACTIVE", 2)]
+    sched_split = pd.DataFrame({"team_id": [1, 2], "date": ["2026-10-20", "2026-10-21"], "week": [1, 1]})
+    b = make_board(rows)
+    G, _ = day_matrix(b, sched_split)
+    r = recommend(b, ev_matrix(b, G), [], set(), LEAGUE, "playoffs", np.array([False, True]))
+    assert r.index[0] == 1
+
+
+def test_every_strategy_scores():
+    for name in STRATEGIES:
+        assert rec(ROWS, strategy=name).score.notna().all(), name
+
+
+def test_survive():
+    b = make_board([(100, "UTIL", "ACTIVE", 1)] + [(10, "UTIL", "ACTIVE", 1)] * 4)
+    rng = np.random.default_rng(0)
+    assert survive(b, [0, 4], set(), 0, rng).tolist() == [1.0, 1.0]
+    p = survive(b, [0, 4], set(), 1, rng)
+    assert p[0] == 0.0 and p[4] > 0.5
+    assert survive(b, [0], set(), None, rng).tolist() == [0.0]
