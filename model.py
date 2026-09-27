@@ -77,3 +77,68 @@ def shrunk_rates(games, target, k=SHRINK_K):
     num = games[RATES].mul(w, axis=0).groupby(games.player_id).sum()
     den = w.groupby(games.player_id).sum()
     return num.add(k * league, axis=1).div(den + k, axis=0).reset_index()
+
+
+INJURY_GP = {"OUT": 0.75, "INJURY_RESERVE": 0.5, "SUSPENSION": 0.9}  # ponytail: calibration knob
+OUT_COLS = ["player_id", "name", "team_id", "positions", "adp", "injury_status", "age", "gp", "cv", *STATS, *RATES]
+
+
+def fp_cv(games, scoring, target):
+    g = games[games.season >= target - 2]
+    g = g.assign(fp=points(g, scoring))
+    s = g.groupby("player_id").fp.agg(["mean", "std", "size"])
+    cv = (s["std"] / s["mean"].clip(lower=5)).where(s["size"] >= 15)
+    return cv.fillna(cv.median()).rename("cv").reset_index()
+
+
+def build(games, players, espn_proj, ages, settings):
+    season = settings["season"]
+    tab = season_table(games)
+    seasons = set(tab.season)
+    stat_m, gp_m = fit(tab, ages, [s for s in settings["history_seasons"] if s - 1 in seasons], season)
+    proj = predict(stat_m, gp_m, tab, ages, season, season)
+    rookies = espn_proj[~espn_proj.player_id.isin(proj.player_id)][["player_id", "gp", *STATS]]
+    proj = pd.concat([proj, rookies], ignore_index=True)
+    proj = proj.merge(shrunk_rates(games, season), on="player_id", how="left")
+    proj[RATES] = proj[RATES].fillna(games[RATES].mean())
+    cv = fp_cv(games, settings["scoring"], season)
+    proj = proj.merge(cv, on="player_id", how="left")
+    proj["cv"] = proj.cv.fillna(cv.cv.median())
+    out = players.merge(proj, on="player_id")
+    out["gp"] = out.gp * out.injury_status.map(INJURY_GP).fillna(1.0)
+    return out[OUT_COLS]
+
+
+def backtest(games, ages, settings):
+    """Fit on seasons before the last one, predict it, compare with 'repeat last season'."""
+    tab = season_table(games)
+    test = int(tab.season.max())
+    seasons = set(tab.season)
+    stat_m, gp_m = fit(tab, ages, [s for s in range(test - 3, test) if s - 1 in seasons], settings["season"])
+    pred = predict(stat_m, gp_m, tab, ages, test, settings["season"])
+    last = features(tab, ages, test, settings["season"]).rename(columns={f"{c}_1": c for c in STATS})
+    actual = tab[(tab.season == test) & (tab.GP >= 20)]
+    fp = lambda d: pd.Series(points(d.assign(**{c: 0.0 for c in RATES}), settings["scoring"]).values,
+                             index=d.player_id.values)
+    df = pd.concat({"actual": fp(actual), "model": fp(pred), "last": fp(last)}, axis=1, join="inner")
+    return {"season": test, "n": len(df),
+            "mae_model": round((df.model - df.actual).abs().mean(), 2),
+            "mae_last": round((df["last"] - df.actual).abs().mean(), 2)}
+
+
+def main():
+    s = json.loads((ROOT / "settings.json").read_text())
+    games = pd.concat([pd.read_csv(DATA / f"games_{y}.csv") for y in s["history_seasons"]], ignore_index=True)
+    a = pd.read_csv(DATA / "ages.csv")
+    ages = dict(zip(a.player_id, a.age))
+    if "--backtest" in sys.argv:
+        print(backtest(games, ages, s))
+        return
+    proj = build(games, pd.read_csv(DATA / "players.csv"), pd.read_csv(DATA / "espn_proj.csv"), ages, s)
+    proj.to_csv(DATA / "projections.csv", index=False)
+    top = proj.assign(fp=points(proj, s["scoring"])).nlargest(15, "fp")
+    print(top[["name", "positions", "gp", "fp"]].to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()

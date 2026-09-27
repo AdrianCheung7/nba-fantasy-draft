@@ -55,3 +55,25 @@ def test_shrunk_rates_pull_toward_league():
     g.loc[(g.player_id == 0) & (g.period == 0), "EJ"] = 1.0
     r = shrunk_rates(g, 2027).set_index("player_id").EJ
     assert r[0] == pytest.approx(5 / 70) and r[1] == pytest.approx(2 / 70)
+
+
+from model import build
+
+COLS = ["player_id", "name", "team_id", "positions", "adp", "injury_status", "age", "gp", "cv", *STATS, *RATES]
+
+
+def test_build_rookie_fallback_and_injury_scaling():
+    games = fake_games()
+    players = pd.DataFrame({"player_id": [0, 1, 999], "name": ["A", "B", "Rook"], "team_id": [1, 2, 3],
+                            "positions": ["G|UTIL", "F|UTIL", "C|UTIL"], "adp": [1.0, 2.0, 3.0],
+                            "injury_status": ["OUT", "ACTIVE", "ACTIVE"], "age": [25, 30, 19]})
+    espn = pd.DataFrame([{"player_id": 999, "gp": 70.0, **{c: 5.0 for c in STATS}, **{c: 0.0 for c in RATES}},
+                         {"player_id": 1, "gp": 10.0, **{c: 99.0 for c in STATS}, **{c: 0.0 for c in RATES}}])
+    settings = {"season": 2027, "history_seasons": [2022, 2023, 2024, 2025, 2026], "scoring": SCORING}
+    proj = build(games, players, espn, {0: 25, 1: 30}, settings).set_index("player_id")
+    assert list(proj.reset_index().columns) == COLS
+    assert set(proj.index) == {0, 1, 999}
+    assert proj.loc[999, "gp"] == 70.0 and proj.loc[999, "PTS"] == 5.0          # rookie uses ESPN
+    assert proj.loc[1, "PTS"] < 50                                              # veteran ignores ESPN
+    assert proj.loc[0, "gp"] == pytest.approx(0.75 * proj.loc[1, "gp"], rel=0.1)  # OUT scaled
+    assert proj.cv.notna().all() and proj[RATES].notna().all().all()
