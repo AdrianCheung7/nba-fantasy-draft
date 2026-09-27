@@ -4,6 +4,7 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+import fetch
 from fetch import parse_games, parse_players, parse_proj, parse_schedule, save
 
 GAME = {"statSplitTypeId": 5, "statSourceId": 0, "seasonId": 2026, "scoringPeriodId": 7,
@@ -54,3 +55,26 @@ def test_save_is_atomic(tmp_path):
     save(pd.DataFrame({"a": [1]}), p)
     assert p.read_text().splitlines() == ["a", "1"]
     assert not (tmp_path / "x.tmp").exists()
+
+
+def test_get_requests_full_player_list(monkeypatch):
+    # Live ESPN behavior (discovered 2026-09-27): a bare GET on the players endpoint
+    # returns only 50 players (its default page size), not "all players" as assumed.
+    # fetch.get must send fetch.PLAYER_HEADERS so player pulls aren't silently truncated.
+    seen = {}
+
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"ok": True}
+
+    def fake_get(url, headers=None, timeout=None):
+        seen["headers"] = headers
+        return FakeResp()
+
+    monkeypatch.setattr(fetch.requests, "get", fake_get)
+    fetch.get(fetch.PLAYERS.format(season=2026), headers=fetch.PLAYER_HEADERS)
+    assert seen["headers"] == fetch.PLAYER_HEADERS
+    assert '"limit": 5000' in fetch.PLAYER_HEADERS["x-fantasy-filter"]

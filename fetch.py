@@ -20,12 +20,16 @@ STAT_IDS = {"PTS": 0, "BLK": 1, "STL": 2, "AST": 3, "OREB": 4, "DREB": 5, "EJ": 
             "3PA": 18, "TD": 38, "QD": 39, "MIN": 40, "TW": 43}
 SLOT_NAMES = {0: "PG", 1: "SG", 2: "SF", 3: "PF", 4: "C", 5: "G", 6: "F", 7: "SG/SF",
               8: "G/F", 9: "PF/C", 10: "F/C", 11: "UTIL", 12: "BE", 13: "IR"}
+# Live ESPN behavior (verified 2026-09-27): a bare GET on the players endpoint returns
+# only its default page of 50 players. This header requests the full player pool.
+PLAYER_HEADERS = {"x-fantasy-filter": json.dumps(
+    {"players": {"limit": 5000, "sortDraftRanks": {"sortPriority": 100, "sortAsc": True, "value": "STANDARD"}}})}
 
 
-def get(url, tries=3):
+def get(url, headers=None, tries=3):
     for i in range(tries):
         try:
-            r = requests.get(url, timeout=180)
+            r = requests.get(url, headers=headers, timeout=180)
             r.raise_for_status()
             return r.json()
         except requests.RequestException as e:
@@ -108,9 +112,9 @@ def main(refresh=False):
         out = DATA / f"games_{season}.csv"
         if refresh or not out.exists():
             print(f"fetching {season} game logs ...")
-            save(parse_games(get(PLAYERS.format(season=season)), season), out)
+            save(parse_games(get(PLAYERS.format(season=season), headers=PLAYER_HEADERS), season), out)
     print("fetching 2026-27 players ...")
-    cur = get(PLAYERS.format(season=s["season"]))
+    cur = get(PLAYERS.format(season=s["season"]), headers=PLAYER_HEADERS)
     save(parse_proj(cur, s["season"]), DATA / "espn_proj.csv")
     ids = [p["id"] for p in cur if p.get("active") and p.get("eligibleSlots") and p.get("proTeamId", 0) != 0]
     ages = fetch_ages(ids, DATA / "ages.csv")
