@@ -13,6 +13,7 @@ ROOT = Path(__file__).parent
 DATA = ROOT / "data"
 NOISE = 0.1  # ponytail: opponent pick noise (lognormal sigma); 0 = clones of the greedy recommender
 OPPONENTS = ("greedy", "adp")
+ADP_UNRANKED = 139  # ESPN's default adp (~140) for players nobody drafts
 
 
 def round_robin(n):
@@ -68,3 +69,53 @@ def validate(settings, slot):
         raise ValueError(f"playoff teams must be 2..{teams}")
     if (p - 1).bit_length() > w:
         raise ValueError(f"{p} playoff teams need {(p - 1).bit_length()} playoff weeks, have {w}")
+
+
+def availability(G, avail, rng):
+    """One contiguous injury spell per player-season; length ~ Binomial(games, 1 - avail)."""
+    plays = G.copy()
+    for i in range(len(G)):
+        game_days = np.flatnonzero(G[i])
+        miss = rng.binomial(len(game_days), 1 - avail[i])
+        if miss:
+            start = rng.integers(0, len(game_days) - miss + 1)
+            plays[i, game_days[start:start + miss]] = False
+    return plays
+
+
+def sim_season(rosters, b, G, week_idx, n_weeks, n_start, rng):
+    """Weekly fantasy points (teams, weeks); daily lineup = top-n expected scorers who play."""
+    fp, sd, avail = b.fp_pg.values, b.sd.values, b.avail.values
+    weekly = np.zeros((len(rosters), n_weeks))
+    for t, r in enumerate(rosters):
+        r = np.asarray(r)
+        plays = availability(G[r], avail[r], rng)
+        lineup = np.argsort(-np.where(plays, fp[r, None], -np.inf), axis=0)[:n_start]
+        real = np.where(plays, rng.normal(fp[r, None], sd[r, None], plays.shape), 0.0)
+        np.add.at(weekly[t], week_idx, np.take_along_axis(real, lineup, axis=0).sum(axis=0))
+    return weekly
+
+
+def adp_pick(b, mine, taken, settings, rng):
+    free = b[~b.index.isin(list(taken))]
+    # ESPN gives undrafted players adp ~140: they go after every ranked player, best season_fp first
+    noisy = np.where(free.adp < ADP_UNRANKED, free.adp * rng.lognormal(0, NOISE, len(free)), np.inf)
+    order = free.index[np.lexsort((-free.season_fp.values, noisy))]
+    return next((c for c in order[:100] if feasible(b, mine, [c], settings)), order[0])
+
+
+def sim_draft(b, ev, settings, me, strategy, opp, po_mask, rng):
+    rosters = [[] for _ in range(settings["teams"])]
+    taken = set()
+    for t in snake(settings["teams"], settings["rounds"]):
+        if t == me:
+            pick = recommend(b, ev, rosters[t], taken, settings, strategy,
+                             po_mask if strategy == "playoffs" else None).index[0]
+        elif opp == "adp":
+            pick = adp_pick(b, rosters[t], taken, settings, rng)
+        else:
+            r = recommend(b, ev, rosters[t], taken, settings, "greedy")
+            pick = r.index[np.argmax(r.score.values * rng.lognormal(0, NOISE, len(r)))]
+        rosters[t].append(pick)
+        taken.add(pick)
+    return rosters

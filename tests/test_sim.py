@@ -45,3 +45,60 @@ def test_validate():
     for bad, slot in [(ok, 15), (ok, 0), ({**ok, "playoff_teams": 9}, 1), ({**ok, "playoff_teams": 15}, 1)]:
         with pytest.raises(ValueError):
             validate(bad, slot)
+
+
+from draft import board, day_matrix, ev_matrix, starters, team_value
+from model import RATES, STATS
+from sim import adp_pick, sim_draft, sim_season
+
+
+def make_board(rows, settings):
+    """rows: (pts_per_game, positions, injury_status, team_id, cv)"""
+    proj = pd.DataFrame([{"player_id": 100 + i, "name": f"P{i}", "team_id": t, "positions": pos, "adp": i + 1.0,
+                          "injury_status": inj, "age": 25, "gp": 82.0, "cv": cv,
+                          **{c: 0.0 for c in STATS + RATES}, "PTS": pts}
+                         for i, (pts, pos, inj, t, cv) in enumerate(rows)])
+    return board(proj, settings)
+
+
+def make_schedule(teams=4, weeks=4):
+    days = pd.date_range("2026-10-19", periods=7 * weeks)
+    return pd.DataFrame([{"team_id": t, "date": d.strftime("%Y-%m-%d"), "week": i // 7 + 1}
+                         for i, d in enumerate(days) for t in range(1, teams + 1) if (i + t) % 2 == 0])
+
+
+TINY = {"teams": 3, "rounds": 2, "slots": {"UTIL": 1, "BE": 1}, "scoring": {"PTS": 1},
+        "playoff_teams": 2, "playoff_weeks": 1}
+
+
+def test_season_matches_team_value():
+    s = {**TINY, "slots": {"UTIL": 2, "BE": 1}}
+    b = make_board([(30, "UTIL|BE", "ACTIVE", 1, 0.0), (20, "UTIL|BE", "ACTIVE", 2, 0.0),
+                    (10, "UTIL|BE", "ACTIVE", 1, 0.0)], s)
+    sched = make_schedule()
+    G, days = day_matrix(b, sched)
+    week = sched.drop_duplicates("date").set_index("date").week.reindex(days).values
+    weekly = sim_season([[0, 1, 2]], b, G, week - 1, int(week.max()), 2, np.random.default_rng(0))
+    assert weekly.sum() == pytest.approx(team_value(ev_matrix(b, G)[[0, 1, 2]], 2))
+
+
+def test_sim_draft_unique_full_rosters():
+    b = make_board([(40 - 3 * i, "UTIL|BE", "ACTIVE", 1 + i % 4, 0.3) for i in range(10)], TINY)
+    G, _ = day_matrix(b, make_schedule())
+    ev = ev_matrix(b, G)
+    for opp in ("greedy", "adp"):
+        rosters = sim_draft(b, ev, TINY, 0, "greedy", opp, None, np.random.default_rng(1))
+        picks = [p for r in rosters for p in r]
+        assert [len(r) for r in rosters] == [2, 2, 2] and len(set(picks)) == 6
+        assert rosters[0][0] == 0  # I pick first, greedy, no noise on my own picks
+
+
+def test_adp_pick_unranked_after_ranked_then_by_value():
+    # ESPN gives every undrafted player adp ~140: rank them after real ADPs, best season_fp first
+    b = make_board([(5, "UTIL|BE", "ACTIVE", 1, 0.3), (10, "UTIL|BE", "ACTIVE", 1, 0.3),
+                    (30, "UTIL|BE", "ACTIVE", 1, 0.3)], TINY)
+    b["adp"] = [130.0, 140.0, 140.0]
+    for seed in range(20):
+        rng = np.random.default_rng(seed)
+        assert adp_pick(b, [], set(), TINY, rng) == 0
+        assert adp_pick(b, [], {0}, TINY, rng) == 2
