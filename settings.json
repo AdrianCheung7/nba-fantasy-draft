@@ -1,0 +1,14 @@
+{
+  "season": 2027,
+  "history_seasons": [2022, 2023, 2024, 2025, 2026],
+  "teams": 14,
+  "my_slot": 1,
+  "rounds": 14,
+  "strategy": "greedy",
+  "slots": {"G": 2, "F": 1, "SG/SF": 1, "PF/C": 1, "UTIL": 1, "BE": 6, "IR": 2},
+  "scoring": {"FGM": 0.5, "FGMI": -0.5, "FTM": 1, "FTMI": -1, "3PM": 2, "3PMI": -1,
+              "OREB": 1.5, "DREB": 1, "AST": 1, "STL": 2, "BLK": 2, "TO": -1,
+              "EJ": -100, "FF": -2, "TF": -3, "TD": 10, "QD": 100, "PTS": 1, "TW": 1},
+  "playoff_teams": 6,
+  "playoff_weeks": 3
+}
