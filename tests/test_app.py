@@ -96,3 +96,56 @@ def test_my_slot_persists_across_restart(at, home):
     at2 = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60).run()
     assert not at2.exception
     assert at2.selectbox(key="my_slot").value == 3
+
+
+def test_season_tab_without_espn_auth_explains_setup(at):
+    assert not at.exception
+    assert [t.label for t in at.tabs] == ["Draft", "Season"]
+    assert any("espn_auth.json" in i.value for i in at.info)
+
+
+def test_sync_button_reloads_synced_settings(at, home, monkeypatch):
+    """Sync overwrites settings.json; the sidebar widgets must pick the new values up, not autosave the old ones back."""
+    import subprocess
+    from types import SimpleNamespace
+
+    def fake_sync(cmd, **kw):
+        s = json.loads((home / "settings.json").read_text())
+        (home / "settings.json").write_text(json.dumps({**s, "teams": 12, "my_slot": 5, "slots": {**s["slots"], "G": 3}}))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_sync)
+    at.button(key="sync").click().run()
+    assert not at.exception
+    assert (at.selectbox(key="teams").value, at.selectbox(key="my_slot").value, at.number_input(key="slot_G").value) == (12, 5, 3)
+    assert json.loads((home / "settings.json").read_text())["teams"] == 12
+
+
+def test_sync_failure_shows_message(at, monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="need espn_auth.json"))
+    at.button(key="sync").click().run()
+    assert any("need espn_auth.json" in e.value for e in at.error)
+
+
+def test_season_tab_shows_matchup_and_pickups(at, home, monkeypatch):
+    """A synthetic ESPN league: me (team 13) with 14 players vs team 1 with 5; everyone else in the pool is free."""
+    import espn
+    ids = pd.read_csv(home / "data" / "projections.csv").player_id.astype(int).tolist()
+    ent = lambda pids, slots: [{"playerId": p, "lineupSlotId": sl} for p, sl in zip(pids, slots)]
+    js = {"teams": [{"id": 13, "name": "Raj", "roster": {"entries": ent(ids[20:34], [5] * 2 + [12] * 10 + [13] * 2)}},
+                    {"id": 1, "name": "Rivals", "roster": {"entries": ent(ids[40:45], [5] * 5)}}],
+          "schedule": [{"matchupPeriodId": 1, "home": {"teamId": 13, "totalPoints": 10.0},
+                        "away": {"teamId": 1, "totalPoints": 20.0}}]}
+    (home / "espn_auth.json").write_text('{"espn_s2": "x", "SWID": "{y}"}')
+    monkeypatch.setattr(espn, "league", lambda *a, **k: js)
+    from streamlit.testing.v1 import AppTest
+    at2 = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60).run()
+    assert not at2.exception and not at2.error
+    assert at2.metric[0].label == "Win chance"
+    tables = [d.value for d in at2.dataframe]
+    assert list(tables[-2].columns) == ["Team", "Points so far", "Projected final"]
+    assert tables[-2]["Points so far"].tolist() == [10, 20]
+    assert list(tables[-1].columns[:3]) == ["Player", "Pos", "Games left this matchup"] and len(tables[-1]) == 15
+    assert (tables[-1]["Drop"] != "").all()

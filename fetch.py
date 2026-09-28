@@ -121,6 +121,7 @@ def main(refresh=False):
     print("fetching 2026-27 players ...")
     cur = get(PLAYERS.format(season=s["season"]), headers=PLAYER_HEADERS)
     save(parse_proj(cur, s["season"]), DATA / "espn_proj.csv")
+    save(parse_games(cur, s["season"]), DATA / f"games_{s['season']}.csv")  # in-season: model.py blends it in
     ids = [p["id"] for p in cur if p.get("active") and p.get("eligibleSlots") and p.get("proTeamId", 0) != 0]
     ages = fetch_ages(ids, DATA / "ages.csv")
     save(parse_players(cur, ages), DATA / "players.csv")

@@ -80,3 +80,17 @@ def test_build_rookie_fallback_and_injury_scaling():
     assert proj.loc[1, "PTS"] < 50                                              # veteran ignores ESPN
     assert proj.loc[0, "gp"] == pytest.approx(0.75 * proj.loc[1, "gp"], rel=0.1)  # OUT scaled
     assert proj.cv.notna().all() and proj[RATES].notna().all().all()
+
+
+from model import blend
+
+
+def test_blend_weights_current_season_by_games_played():
+    proj = pd.DataFrame({"player_id": [0, 1, 2], "gp": [70.0] * 3, "cv": [0.3] * 3,
+                         **{c: [10.0] * 3 for c in STATS + RATES}})
+    cur = pd.DataFrame([{"player_id": p, **{c: 20.0 for c in STATS + RATES}} for p in [0] * 20 + [1] * 60])
+    out = blend(proj, cur).set_index("player_id")
+    assert out.loc[0, "PTS"] == pytest.approx(15.0) and out.loc[0, "TD"] == pytest.approx(15.0)  # 20/(20+20) = 0.5
+    assert out.loc[1, "PTS"] == pytest.approx(17.5)                                               # 60/80
+    assert out.loc[2, "PTS"] == 10.0                                                              # no games: untouched
+    assert (out.gp == 70).all() and (out.cv == 0.3).all()

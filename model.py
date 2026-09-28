@@ -117,6 +117,18 @@ def build(games, players, espn_proj, ages, settings):
     return out[OUT_COLS]
 
 
+def blend(proj, cur_games, k=20):
+    """D9: per-game rates = w * this season's + (1 - w) * projected, w = n / (n + k), n = games played."""
+    cols = STATS + RATES
+    g = cur_games.groupby("player_id")
+    n = g.size().reindex(proj.player_id).fillna(0).values[:, None]
+    cur = g[cols].mean().reindex(proj.player_id).values
+    w = n / (n + k)
+    out = proj.copy()
+    out[cols] = np.where(n > 0, w * np.nan_to_num(cur) + (1 - w) * proj[cols].values, proj[cols].values)
+    return out
+
+
 def backtest(games, ages, settings):
     """Fit on seasons before the last one, predict it, compare with 'repeat last season'."""
     tab = season_table(games)
@@ -143,6 +155,9 @@ def main():
         print(backtest(games, ages, s))
         return
     proj = build(games, pd.read_csv(DATA / "players.csv"), pd.read_csv(DATA / "espn_proj.csv"), ages, s)
+    cur = DATA / f"games_{s['season']}.csv"  # this season's game logs (fetch.py), once it has any
+    if cur.exists():
+        proj = blend(proj, pd.read_csv(cur))
     proj.to_csv(DATA / "projections.csv", index=False)
     top = proj.assign(fp=points(proj, s["scoring"])).nlargest(15, "fp")
     print(top[["name", "positions", "gp", "fp"]].to_string(index=False))

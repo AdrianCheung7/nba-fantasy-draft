@@ -9,8 +9,10 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from draft import STRATEGIES, advise, board, day_matrix, ev_matrix, snake, starters
+import espn
+from draft import STRATEGIES, advise, board, day_matrix, ev_matrix, slot_fit, snake, starters
 from fetch import SLOT_NAMES
+from season import matchup_projection, pickups, rest_of_matchup, split_roster, week_ev, window
 from sim import LEAGUE_KEYS, calendar, validate
 
 ROOT = Path(__file__).parent
@@ -86,6 +88,15 @@ with st.sidebar:
             sim = None
             default = "greedy"
     strat_names = list(STRATEGIES)
+    if st.button("Sync league from ESPN", key="sync"):  # rewrites settings.json + data/matchups.csv (needs espn_auth.json)
+        r = subprocess.run([sys.executable, str(ROOT / "espn.py")], cwd=ROOT, capture_output=True, text=True)
+        if r.returncode:
+            st.error((r.stderr.strip().splitlines() or ["sync failed"])[-1])
+        else:
+            for k in [k for k in st.session_state if k in ("teams", "my_slot", "rounds", "po_teams", "po_weeks")
+                      or k.startswith(("slot_", "sc_"))]:
+                del st.session_state[k]  # widgets would otherwise keep the old values and autosave them back
+            st.rerun()
     with st.expander("Strategy"):
         s["strategy"] = st.selectbox("Strategy", strat_names,
                                      index=strat_names.index(default) if default in strat_names else 0, key="strategy")
@@ -128,65 +139,130 @@ ev = ev_matrix(b, G)
 period, _, po = calendar(days, sched, s, load_csv("matchups.csv") if (DATA / "matchups.csv").exists() else None)
 po_mask = np.isin(period, po)
 
-if "picks" not in st.session_state:
-    st.session_state.picks = load_picks()
-picks = st.session_state.picks
-idx = dict(zip(b.player_id, b.index))
-pname = dict(zip(b.player_id, b["name"]))
-pos = dict(zip(b.player_id, b.positions))
-order = snake(s["teams"], s["rounds"])
-me = s["my_slot"] - 1
-n = len(picks)
-taken = {idx.get(p) for p in picks}  # None = unlisted player
-# advise counts my "not listed"/unknown picks (F4) as spent rounds and bench spots
-adv = advise(b, ev, [{"overall": i + 1, "player": idx.get(p)} for i, p in enumerate(picks)], s,
-             s["strategy"], po_mask if s["strategy"] == "playoffs" else None)
+@st.cache_data(ttl=600)
+def espn_league(home, league_id, season):
+    return espn.league(espn.VIEWS, league_id, season, espn.auth(home))
 
-done = n >= len(order)
-if done:
-    st.header("Draft complete")
-else:
-    on_clock = order[n]
-    rnd, k = divmod(n, s["teams"])
-    st.header(f"Round {rnd + 1}, pick {k + 1}: " + ("YOUR PICK" if on_clock == me else f"Team {on_clock + 1} on the clock"))
-    avail = b[~b.index.isin(list(taken))].sort_values("season_fp", ascending=False)
-    choice = st.selectbox("Who was just picked?", [-1] + avail.player_id.tolist(), index=None,
-                          placeholder="Start typing a name...", key=f"pick_{n}",
-                          format_func=lambda p: UNLISTED if p == -1 else f"{pname[p]} ({pos[p]})")
-c1, c2 = st.columns(2)
-if not done and c1.button("Drafted", type="primary", disabled=choice is None, key="drafted"):
-    picks.append(None if choice == -1 else int(choice))
-    save_picks(picks)
-    st.rerun()
-if c2.button("Undo last pick", disabled=not picks, key="undo"):
-    picks.pop()
-    save_picks(picks)
-    st.rerun()
-if not done:
-    rec = adv["top"]
-    st.subheader("Take now" if on_clock == me else "Best options for your next pick")
-    st.dataframe(pd.DataFrame({
-        "Player": rec["name"] + b.loc[rec.index, "injury_status"].map(lambda x: "" if x == "ACTIVE" else f" ({x})"),
-        "Pos": rec.pos,
-        "Pts/game": rec.fp_pg.round(1),
-        "Games": rec.games.round(0),
-        "Value": rec.value.round(0),
-        "% still there": (rec.p_back * 100).round(0),
-    }), hide_index=True)
-    st.caption("Value = season points the player adds to your lineup. "
-               "% still there = chance they are still available at your next pick.")
-    if rec.attrs["fallback"]:  # M7
-        st.caption("No fully legal pick left - showing best available.")
 
-left, right = st.columns(2)
-left.subheader("My roster")
-roster = pd.DataFrame(adv["roster"], columns=["name", "pos", "fp_pg", "games"]).astype({"fp_pg": float, "games": float})
-left.dataframe(roster.round({"fp_pg": 1, "games": 0}).rename(
-    columns={"name": "Player", "pos": "Pos", "fp_pg": "Pts/game", "games": "Games"}), hide_index=True)
-if adv["needs"]:
-    left.caption("Still needed: " + ", ".join(adv["needs"]))
-right.subheader("Pick log")
-right.dataframe(pd.DataFrame({
-    "pick": list(range(n, 0, -1)),
-    "team": [str(order[i] + 1) if i < len(order) else "?" for i in range(n - 1, -1, -1)],
-    "player": [pname.get(p, UNLISTED) for p in reversed(picks)]}), hide_index=True)
+def render_season():
+    if st.button("Refresh data (stats + projections, a few minutes)", key="refresh"):
+        with st.spinner("Fetching stats and rebuilding projections..."):
+            for script in ("fetch.py", "model.py"):
+                r = subprocess.run([sys.executable, str(ROOT / script)], cwd=ROOT, capture_output=True, text=True)
+                if r.returncode:
+                    return st.error(f"{script} failed: " + (r.stderr.strip().splitlines() or ["see console"])[-1])
+        st.cache_data.clear()
+        st.rerun()
+    try:
+        cookies = espn.auth(HOME)
+    except ValueError:
+        return st.error("espn_auth.json is not valid JSON.")
+    if not cookies or not s.get("league_id"):
+        return st.info(f"The Season tab reads your ESPN league. Create {HOME / 'espn_auth.json'} containing "
+                       '{"espn_s2": "...", "SWID": "{...}"} (the two cookies of a logged-in fantasy.espn.com '
+                       "session) and make sure settings.json has your league_id, then reload.")
+    try:
+        js = espn_league(str(HOME), s["league_id"], s["season"])
+    except RuntimeError as e:
+        return st.error(f"ESPN refused the request - the cookies in espn_auth.json are probably expired. ({e})")
+    win = window(days, period, pd.Timestamp.now("America/New_York").strftime("%Y-%m-%d"))
+    if win is None:
+        return st.info("The season is over.")
+    p, wk, ros = win
+    idx = dict(zip(b.player_id, b.index))
+    rows = espn.rosters(js)
+    mine, active = split_roster(rows[rows.team_id == s["espn_team_id"]], idx)
+    fit, cap = slot_fit(b, s)
+    evw = week_ev(b, ev, wk)
+    st.subheader(f"This week's matchup (matchup {p + 1}, {int(wk.sum())} game days left)")
+    sc = espn.scores(js, int(p) + 1, s["espn_team_id"])
+    if sc is None:
+        st.info("No head-to-head game found for this matchup.")
+    else:
+        opp = split_roster(rows[rows.team_id == sc["opp_id"]], idx)[1]
+        (m_ev, m_var), (o_ev, o_var) = (rest_of_matchup(b, evw, fit, cap, t) for t in (active, opp))
+        m = matchup_projection(sc["me"], sc["opp"], m_ev, o_ev, m_var, o_var)
+        names = {t["id"]: t["name"] for t in js["teams"]}
+        st.dataframe(pd.DataFrame({"Team": [names[s["espn_team_id"]] + " (you)", names.get(sc["opp_id"], "Opponent")],
+                                   "Points so far": [sc["me"], sc["opp"]],
+                                   "Projected final": [m["me"], m["opp"]]}).round(0), hide_index=True)
+        st.metric("Win chance", f"{m['win']:.0%}")
+    st.subheader("Pickups")
+    if not mine:
+        return st.info("Your roster is empty (the draft hasn't happened yet).")
+    free = b.index[~b.player_id.isin(rows.player_id)]
+    pk = pickups(b, ev, G, mine, active, free, wk, ros, s)
+    st.dataframe(pd.DataFrame({"Player": pk.name, "Pos": pk.pos, "Games left this matchup": pk.games.round(1),
+                               "+Pts this matchup": pk.week_gain.round(0), "+Pts rest of season": pk.ros_gain.round(0),
+                               "★": pk.star.map({True: "★", False: ""}), "Drop": pk["drop"]}), hide_index=True)
+    st.caption("Points added to your daily best lineup if you add the player and drop the named one (never an IR "
+               "player). Out players count 0 games this matchup, day-to-day players half. ★ = adds points over the "
+               "rest of the season too. Injury statuses come from the last Refresh.")
+
+
+draft_tab, season_tab = st.tabs(["Draft", "Season"])
+with draft_tab:
+    if "picks" not in st.session_state:
+        st.session_state.picks = load_picks()
+    picks = st.session_state.picks
+    idx = dict(zip(b.player_id, b.index))
+    pname = dict(zip(b.player_id, b["name"]))
+    pos = dict(zip(b.player_id, b.positions))
+    order = snake(s["teams"], s["rounds"])
+    me = s["my_slot"] - 1
+    n = len(picks)
+    taken = {idx.get(p) for p in picks}  # None = unlisted player
+    # advise counts my "not listed"/unknown picks (F4) as spent rounds and bench spots
+    adv = advise(b, ev, [{"overall": i + 1, "player": idx.get(p)} for i, p in enumerate(picks)], s,
+                 s["strategy"], po_mask if s["strategy"] == "playoffs" else None)
+
+    done = n >= len(order)
+    if done:
+        st.header("Draft complete")
+    else:
+        on_clock = order[n]
+        rnd, k = divmod(n, s["teams"])
+        st.header(f"Round {rnd + 1}, pick {k + 1}: " + ("YOUR PICK" if on_clock == me else f"Team {on_clock + 1} on the clock"))
+        avail = b[~b.index.isin(list(taken))].sort_values("season_fp", ascending=False)
+        choice = st.selectbox("Who was just picked?", [-1] + avail.player_id.tolist(), index=None,
+                              placeholder="Start typing a name...", key=f"pick_{n}",
+                              format_func=lambda p: UNLISTED if p == -1 else f"{pname[p]} ({pos[p]})")
+    c1, c2 = st.columns(2)
+    if not done and c1.button("Drafted", type="primary", disabled=choice is None, key="drafted"):
+        picks.append(None if choice == -1 else int(choice))
+        save_picks(picks)
+        st.rerun()
+    if c2.button("Undo last pick", disabled=not picks, key="undo"):
+        picks.pop()
+        save_picks(picks)
+        st.rerun()
+    if not done:
+        rec = adv["top"]
+        st.subheader("Take now" if on_clock == me else "Best options for your next pick")
+        st.dataframe(pd.DataFrame({
+            "Player": rec["name"] + b.loc[rec.index, "injury_status"].map(lambda x: "" if x == "ACTIVE" else f" ({x})"),
+            "Pos": rec.pos,
+            "Pts/game": rec.fp_pg.round(1),
+            "Games": rec.games.round(0),
+            "Value": rec.value.round(0),
+            "% still there": (rec.p_back * 100).round(0),
+        }), hide_index=True)
+        st.caption("Value = season points the player adds to your lineup. "
+                   "% still there = chance they are still available at your next pick.")
+        if rec.attrs["fallback"]:  # M7
+            st.caption("No fully legal pick left - showing best available.")
+
+    left, right = st.columns(2)
+    left.subheader("My roster")
+    roster = pd.DataFrame(adv["roster"], columns=["name", "pos", "fp_pg", "games"]).astype({"fp_pg": float, "games": float})
+    left.dataframe(roster.round({"fp_pg": 1, "games": 0}).rename(
+        columns={"name": "Player", "pos": "Pos", "fp_pg": "Pts/game", "games": "Games"}), hide_index=True)
+    if adv["needs"]:
+        left.caption("Still needed: " + ", ".join(adv["needs"]))
+    right.subheader("Pick log")
+    right.dataframe(pd.DataFrame({
+        "pick": list(range(n, 0, -1)),
+        "team": [str(order[i] + 1) if i < len(order) else "?" for i in range(n - 1, -1, -1)],
+        "player": [pname.get(p, UNLISTED) for p in reversed(picks)]}), hide_index=True)
+with season_tab:
+    render_season()

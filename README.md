@@ -50,6 +50,16 @@ The extension reads picks from ESPN's draft room, sends them to a local server (
 
 Tests: `python -m pytest -q` and `node --test` (runs `extension/parse.test.js`).
 
+## In-season (Season tab)
+
+Put your ESPN cookies in `espn_auth.json` (git-ignored; `{"espn_s2": "...", "SWID": "{...}"}` from a logged-in fantasy.espn.com session). The sidebar's **Sync league from ESPN** button copies the league's settings (slots, scoring, playoffs, your team) into `settings.json` and its matchup calendar into `data/matchups.csv`.
+
+The **Season** tab loads rosters and scores from ESPN when opened (cached 10 minutes) and shows:
+
+- **This week's matchup**: your and your opponent's points so far, projected finals and your win chance. It plays each roster's best daily lineup over the remaining days (out players score nothing, day-to-day players half) and treats the rest as a Normal distribution.
+- **Pickups**: the top 15 free agents by points added to your lineup this matchup (`+Pts this matchup`) and for the rest of the season, if you add them and drop the named player (the one costing your lineup least, never an IR player). ★ = worth keeping past this matchup. Sorted by this matchup because 2 adds a day makes streaming worthwhile.
+- **Refresh data**: re-runs `fetch.py` and `model.py` (a few minutes). `fetch.py` also saves this season's game logs, and `model.py` blends them into the projections (weight n / (n + 20) after n games).
+
 ## Layout
 
 | File | Role |
@@ -58,7 +68,8 @@ Tests: `python -m pytest -q` and `node --test` (runs `extension/parse.test.js`).
 | `model.py` | Ridge regression projections → `data/projections.csv` |
 | `draft.py` | Snake order, roster legality, marginal lineup value, strategies |
 | `sim.py` | Monte Carlo drafts and head-to-head seasons, best strategy per slot |
-| `app.py` | Streamlit UI |
+| `season.py` | In-season pickups, drop candidate and matchup win chance |
+| `app.py` | Streamlit UI (Draft and Season tabs) |
 | `server.py` | Local pick server for the extension (persists `data/draft.json`) |
 | `extension/` | Chrome extension (Manifest V3): pick parser, highlights, side panel |
 | `start.pyw` | Silent launcher for server + app; `--install` / `--uninstall` login entry |
