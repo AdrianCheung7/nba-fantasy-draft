@@ -116,6 +116,7 @@ with st.sidebar:
     with st.expander("Reset draft"):
         if st.checkbox("Yes, clear every pick", key="confirm_reset") and st.button("Clear picks", key="reset"):
             save_picks([])
+            (DATA / "last_picks.json").unlink(missing_ok=True)  # else the pick server replays the old draft
             st.rerun()
 
 # F1: autosave whatever the sidebar landed on, so a refresh/restart resumes from it instead of resetting
