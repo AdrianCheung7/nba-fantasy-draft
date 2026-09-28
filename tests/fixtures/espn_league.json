@@ -1,0 +1,280 @@
+{
+ "id": 178869420,
+ "settings": {
+  "size": 14,
+  "draftSettings": {
+   "pickOrder": [
+    12,
+    5,
+    9,
+    6,
+    2,
+    7,
+    8,
+    14,
+    13,
+    3,
+    4,
+    1,
+    10,
+    11
+   ]
+  },
+  "rosterSettings": {
+   "lineupSlotCounts": {
+    "0": 0,
+    "1": 0,
+    "2": 0,
+    "3": 0,
+    "4": 0,
+    "5": 2,
+    "6": 1,
+    "7": 1,
+    "8": 0,
+    "9": 1,
+    "10": 0,
+    "11": 1,
+    "12": 6,
+    "13": 2,
+    "14": 0
+   }
+  },
+  "scheduleSettings": {
+   "matchupPeriodCount": 19,
+   "matchupPeriods": {
+    "1": [
+     1
+    ],
+    "2": [
+     2
+    ],
+    "3": [
+     3
+    ],
+    "4": [
+     4
+    ],
+    "5": [
+     5
+    ],
+    "6": [
+     6
+    ],
+    "7": [
+     7
+    ],
+    "8": [
+     8
+    ],
+    "9": [
+     9
+    ],
+    "10": [
+     10
+    ],
+    "11": [
+     11
+    ],
+    "12": [
+     12
+    ],
+    "13": [
+     13
+    ],
+    "14": [
+     14
+    ],
+    "15": [
+     15
+    ],
+    "16": [
+     16
+    ],
+    "17": [
+     17
+    ],
+    "18": [
+     18
+    ],
+    "19": [
+     19
+    ],
+    "20": [
+     20,
+     21
+    ],
+    "21": [
+     22,
+     23
+    ]
+   },
+   "playoffMatchupPeriodLength": 2,
+   "playoffTeamCount": 4
+  },
+  "scoringSettings": {
+   "scoringItems": [
+    {
+     "statId": 5,
+     "points": 1.0
+    },
+    {
+     "statId": 23,
+     "points": -0.5
+    },
+    {
+     "statId": 11,
+     "points": -1.0
+    },
+    {
+     "statId": 43,
+     "points": 1.0
+    },
+    {
+     "statId": 15,
+     "points": 1.0
+    },
+    {
+     "statId": 1,
+     "points": 2.0
+    },
+    {
+     "statId": 2,
+     "points": 2.0
+    },
+    {
+     "statId": 10,
+     "points": -3.0
+    },
+    {
+     "statId": 38,
+     "points": 10.0
+    },
+    {
+     "statId": 7,
+     "points": -100.0
+    },
+    {
+     "statId": 39,
+     "points": 100.0
+    },
+    {
+     "statId": 8,
+     "points": -2.0
+    },
+    {
+     "statId": 24,
+     "points": -1.0
+    },
+    {
+     "statId": 25,
+     "points": -1.0
+    },
+    {
+     "statId": 4,
+     "points": 1.5
+    },
+    {
+     "statId": 13,
+     "points": 0.5
+    },
+    {
+     "statId": 0,
+     "points": 1.0
+    },
+    {
+     "statId": 17,
+     "points": 2.0
+    },
+    {
+     "statId": 3,
+     "points": 1.0
+    }
+   ]
+  }
+ },
+ "teams": [
+  {
+   "id": 13,
+   "name": "Raj",
+   "owners": [
+    "{TEST-SWID}"
+   ],
+   "roster": {
+    "entries": [
+     {
+      "playerId": 3112335,
+      "lineupSlotId": 5
+     },
+     {
+      "playerId": 4278073,
+      "lineupSlotId": 12
+     },
+     {
+      "playerId": 4066636,
+      "lineupSlotId": 13
+     }
+    ]
+   }
+  },
+  {
+   "id": 5,
+   "name": "Team Five",
+   "owners": [
+    "{OTHER-SWID}"
+   ],
+   "roster": {
+    "entries": [
+     {
+      "playerId": 3945274,
+      "lineupSlotId": 11
+     }
+    ]
+   }
+  },
+  {
+   "id": 1,
+   "name": "Team One",
+   "owners": [
+    "{OTHER-SWID-2}"
+   ],
+   "roster": {
+    "entries": []
+   }
+  }
+ ],
+ "schedule": [
+  {
+   "matchupPeriodId": 1,
+   "home": {
+    "teamId": 5,
+    "totalPoints": 98.5
+   },
+   "away": {
+    "teamId": 13,
+    "totalPoints": 123.0
+   }
+  },
+  {
+   "matchupPeriodId": 1,
+   "home": {
+    "teamId": 1,
+    "totalPoints": 0.0
+   },
+   "away": {
+    "teamId": 2,
+    "totalPoints": 0.0
+   }
+  },
+  {
+   "matchupPeriodId": 2,
+   "home": {
+    "teamId": 13,
+    "totalPoints": 10.0
+   },
+   "away": {
+    "teamId": 1,
+    "totalPoints": 20.0
+   }
+  }
+ ]
+}

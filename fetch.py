@@ -26,10 +26,10 @@ PLAYER_HEADERS = {"x-fantasy-filter": json.dumps(
     {"players": {"limit": 5000, "sortDraftRanks": {"sortPriority": 100, "sortAsc": True, "value": "STANDARD"}}})}
 
 
-def get(url, headers=None, tries=3):
+def get(url, headers=None, tries=3, cookies=None):
     for i in range(tries):
         try:
-            r = requests.get(url, headers=headers, timeout=180)
+            r = requests.get(url, headers=headers, cookies=cookies, timeout=180)
             r.raise_for_status()
             return r.json()
         except requests.RequestException as e:
@@ -66,14 +66,19 @@ def parse_proj(players, season):
     return pd.DataFrame(rows, columns=["player_id", "gp", *STAT_IDS])
 
 
+def rank(p):
+    r = p.get("draftRanksByRankType") or {}
+    return (r.get("POINTS") or r.get("STANDARD") or {}).get("rank") or 999
+
+
 def parse_players(players, ages):
     rows = [{"player_id": p["id"], "name": p.get("fullName", str(p["id"])), "team_id": p.get("proTeamId", 0),
              "positions": "|".join(SLOT_NAMES[i] for i in p["eligibleSlots"] if i in SLOT_NAMES),
              "adp": (p.get("ownership") or {}).get("averageDraftPosition") or 999.0,
              "injury_status": p.get("injuryStatus") or "ACTIVE",
-             "age": ages.get(p["id"])}
+             "age": ages.get(p["id"]), "espn_rank": rank(p)}
             for p in players if p.get("active") and p.get("eligibleSlots")]
-    return pd.DataFrame(rows, columns=["player_id", "name", "team_id", "positions", "adp", "injury_status", "age"])
+    return pd.DataFrame(rows, columns=["player_id", "name", "team_id", "positions", "adp", "injury_status", "age", "espn_rank"])
 
 
 def parse_schedule(season_json):

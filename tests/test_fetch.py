@@ -13,7 +13,8 @@ DNP = {**GAME, "scoringPeriodId": 8, "stats": {}}
 PROJ = {"statSplitTypeId": 0, "statSourceId": 1, "seasonId": 2027, "stats": {"0": 1640.0, "42": 82.0}}
 PLAYER = {"id": 1, "fullName": "Test Guy", "active": True, "proTeamId": 5,
           "eligibleSlots": [1, 5, 7, 11, 12, 13], "injuryStatus": "OUT",
-          "ownership": {"averageDraftPosition": 12.5}, "stats": [GAME, DNP, PROJ]}
+          "ownership": {"averageDraftPosition": 12.5}, "stats": [GAME, DNP, PROJ],
+          "draftRanksByRankType": {"STANDARD": {"rank": 40}, "POINTS": {"rank": 33}}}
 
 
 def test_parse_games_keeps_played_games_only():
@@ -25,11 +26,13 @@ def test_parse_games_keeps_played_games_only():
 
 def test_parse_players_positions_and_defaults():
     players = [PLAYER, {"id": 2, "active": True}, {"id": 3, "active": True, "eligibleSlots": [4, 11],
-                                                   "ownership": {"averageDraftPosition": 0.0}}]
+                                                   "ownership": {"averageDraftPosition": 0.0}},
+               {"id": 4, "active": True, "eligibleSlots": [4], "draftRanksByRankType": {"STANDARD": {"rank": 77}}}]
     df = parse_players(players, {1: 27})
-    assert list(df.player_id) == [1, 3]
+    assert list(df.player_id) == [1, 3, 4]
     a, b = df.iloc[0], df.iloc[1]
     assert a.positions == "SG|G|SG/SF|UTIL|BE|IR" and a.adp == 12.5 and a.injury_status == "OUT" and a.age == 27
+    assert (a.espn_rank, b.espn_rank, df.iloc[2].espn_rank) == (33, 999, 77)  # POINTS, none, STANDARD fallback
     assert b.positions == "C|UTIL" and b.adp == 999.0 and b.injury_status == "ACTIVE" and b.team_id == 0
 
 
@@ -70,11 +73,11 @@ def test_get_requests_full_player_list(monkeypatch):
         def json(self):
             return {"ok": True}
 
-    def fake_get(url, headers=None, timeout=None):
-        seen["headers"] = headers
+    def fake_get(url, headers=None, timeout=None, cookies=None):
+        seen["headers"], seen["cookies"] = headers, cookies
         return FakeResp()
 
     monkeypatch.setattr(fetch.requests, "get", fake_get)
-    fetch.get(fetch.PLAYERS.format(season=2026), headers=fetch.PLAYER_HEADERS)
-    assert seen["headers"] == fetch.PLAYER_HEADERS
+    fetch.get(fetch.PLAYERS.format(season=2026), headers=fetch.PLAYER_HEADERS, cookies={"a": "b"})
+    assert seen["headers"] == fetch.PLAYER_HEADERS and seen["cookies"] == {"a": "b"}
     assert '"limit": 5000' in fetch.PLAYER_HEADERS["x-fantasy-filter"]
