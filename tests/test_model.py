@@ -73,7 +73,10 @@ def test_build_rookie_fallback_and_injury_scaling():
     proj = build(games, players, espn, {0: 25, 1: 30}, settings).set_index("player_id")
     assert list(proj.reset_index().columns) == COLS
     assert set(proj.index) == {0, 1, 999}
-    assert proj.loc[999, "gp"] == 70.0 and proj.loc[999, "PTS"] == 5.0          # rookie uses ESPN
+    # rookie's ESPN gp is scaled by the model/ESPN gp ratio for player 1, the only veteran in both frames
+    # (player 1 is ACTIVE, so its own gp is untouched by injury scaling and reflects the ratio directly)
+    factor = proj.loc[1, "gp"] / 10.0
+    assert proj.loc[999, "gp"] == pytest.approx(70.0 * factor) and proj.loc[999, "PTS"] == 5.0
     assert proj.loc[1, "PTS"] < 50                                              # veteran ignores ESPN
     assert proj.loc[0, "gp"] == pytest.approx(0.75 * proj.loc[1, "gp"], rel=0.1)  # OUT scaled
     assert proj.cv.notna().all() and proj[RATES].notna().all().all()

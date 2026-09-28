@@ -97,7 +97,13 @@ def build(games, players, espn_proj, ages, settings):
     seasons = set(tab.season)
     stat_m, gp_m = fit(tab, ages, [s for s in settings["history_seasons"] if s - 1 in seasons], season)
     proj = predict(stat_m, gp_m, tab, ages, season, season)
-    rookies = espn_proj[~espn_proj.player_id.isin(proj.player_id)][["player_id", "gp", *STATS]]
+    rookies = espn_proj[~espn_proj.player_id.isin(proj.player_id)][["player_id", "gp", *STATS]].copy()
+    # ESPN's own gp projections run ~20% higher than the model's for players in both frames (F2): scale
+    # rookies (who have no history, so only ESPN gp is available) to the model's scale by that ratio.
+    vets = proj[["player_id", "gp"]].merge(
+        espn_proj[["player_id", "gp"]].rename(columns={"gp": "espn_gp"}), on="player_id")
+    factor = (vets.gp / vets.espn_gp).median() if len(vets) else 1.0
+    rookies["gp"] = rookies.gp * factor
     proj = pd.concat([proj, rookies], ignore_index=True)
     proj = proj.merge(shrunk_rates(games, season), on="player_id", how="left")
     proj[RATES] = proj[RATES].fillna(games[RATES].mean())

@@ -115,4 +115,25 @@ def test_run_smoke():
     df = run(s, 2, n_drafts=2, n_seasons=3, b=b, schedule=make_schedule())
     assert len(df) == len(STRATEGIES) * 2
     assert df[["p_champion", "p_playoffs", "p_bottom3"]].stack().between(0, 1).all()
+    assert "obj_se" in df.columns and (df.obj_se >= 0).all()
     assert best(df) in STRATEGIES
+
+
+def test_best_keeps_greedy_when_gap_within_noise():
+    df = pd.DataFrame([
+        {"strategy": "greedy", "opponents": "greedy", "p_champion": 0.20, "p_bottom3": 0.10, "obj_se": 0.05},
+        {"strategy": "greedy", "opponents": "adp", "p_champion": 0.20, "p_bottom3": 0.10, "obj_se": 0.05},
+        {"strategy": "durable", "opponents": "greedy", "p_champion": 0.22, "p_bottom3": 0.11, "obj_se": 0.05},
+        {"strategy": "durable", "opponents": "adp", "p_champion": 0.22, "p_bottom3": 0.11, "obj_se": 0.05},
+    ])
+    assert best(df) == "greedy"
+
+
+def test_best_switches_when_gap_clearly_beyond_noise():
+    df = pd.DataFrame([
+        {"strategy": "greedy", "opponents": "greedy", "p_champion": 0.10, "p_bottom3": 0.20, "obj_se": 0.01},
+        {"strategy": "greedy", "opponents": "adp", "p_champion": 0.10, "p_bottom3": 0.20, "obj_se": 0.01},
+        {"strategy": "durable", "opponents": "greedy", "p_champion": 0.40, "p_bottom3": 0.05, "obj_se": 0.01},
+        {"strategy": "durable", "opponents": "adp", "p_champion": 0.40, "p_bottom3": 0.05, "obj_se": 0.01},
+    ])
+    assert best(df) == "durable"

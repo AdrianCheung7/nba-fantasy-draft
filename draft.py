@@ -106,7 +106,8 @@ def recommend(b, ev, mine, taken, settings, strategy="greedy", po_mask=None, k=T
             cand.append(c)
             if len(cand) == k:
                 break
-    cand = cand or list(free[:k])  # nothing legal (e.g. no IR-eligible left): best available
+    fallback = not cand  # M7: nothing legal (e.g. no IR-eligible left): best available, flagged for the UI
+    cand = cand or list(free[:k])
     out = b.loc[cand].copy()
     rosters = [mine + [c] for c in cand]
     out["marginal"] = team_value(ev[rosters], n_start) - team_value(ev[mine], n_start)
@@ -117,7 +118,9 @@ def recommend(b, ev, mine, taken, settings, strategy="greedy", po_mask=None, k=T
         out["marginal_po"] = team_value(evp[rosters], n_start) - team_value(evp[mine], n_start)
     ctx = {"ir_open": settings["slots"].get("IR", 0) > int(b.ir_ok.values[mine].sum())}
     out["score"] = STRATEGIES[strategy](out, ctx)
-    return out.sort_values("score", ascending=False)
+    out = out.sort_values("score", ascending=False)
+    out.attrs["fallback"] = fallback
+    return out
 
 
 def survive(b, cand, taken, n_picks, rng, sims=200):

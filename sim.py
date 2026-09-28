@@ -168,15 +168,25 @@ def run(settings, slot, n_drafts=20, n_seasons=20, seed=0, strategies=None, b=No
         sums = list(pool.map(partial(one_draft, **ctx), jobs))
     rows = []
     for i in range(0, len(jobs), n_drafts):
-        m = np.sum(sums[i:i + n_drafts], axis=0) / (n_drafts * n_seasons)
+        rates = np.array(sums[i:i + n_drafts]) / n_seasons  # per-draft rates: (n_drafts, 4)
+        m = rates.mean(axis=0)
+        obj = rates[:, 0] - rates[:, 2]  # per-draft (p_champion - p_bottom3)
+        obj_se = obj.std(ddof=1) / np.sqrt(len(obj)) if len(obj) > 1 else 0.0
         rows.append({"strategy": jobs[i][0], "opponents": jobs[i][1], "p_champion": m[0], "p_playoffs": m[1],
-                     "p_bottom3": m[2], "avg_wins": m[3]})
+                     "p_bottom3": m[2], "avg_wins": m[3], "obj_se": obj_se})
     return pd.DataFrame(rows)
 
 
 def best(df):
     # ["obj"], not .obj: GroupBy.obj is the whole grouped frame
-    return df.assign(obj=df.p_champion - df.p_bottom3).groupby("strategy")["obj"].mean().idxmax()
+    g = df.assign(obj=df.p_champion - df.p_bottom3).groupby("strategy")
+    mean_obj, se = g["obj"].mean(), g["obj_se"].mean()  # se averaged over opponent rows
+    top = mean_obj.idxmax()
+    if top == "greedy" or "greedy" not in mean_obj.index:
+        return top
+    gap = mean_obj[top] - mean_obj["greedy"]
+    # only switch off greedy if the gap clearly exceeds noise (F3): otherwise it's not worth the risk
+    return top if gap > 2 * np.sqrt(se[top] ** 2 + se["greedy"] ** 2) else "greedy"
 
 
 def main():
@@ -188,7 +198,9 @@ def main():
     settings = json.loads((ROOT / "settings.json").read_text())
     df = run(settings, a.slot, a.drafts, a.seasons)
     print(df.round(3).to_string(index=False))
-    out = {"best": best(df), "table": df.to_dict("records")}
+    league = {k: settings[k] for k in ("teams", "rounds", "slots", "scoring", "playoff_teams", "playoff_weeks")}
+    out = {"best": best(df), "table": df.to_dict("records"), "n_drafts": a.drafts, "n_seasons": a.seasons,
+           "league": league}
     (DATA / f"strategy_slot{a.slot}.json").write_text(json.dumps(out, indent=2))
     print("best:", out["best"])
 

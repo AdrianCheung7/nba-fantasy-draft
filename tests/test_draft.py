@@ -98,6 +98,11 @@ def test_recommend_falls_back_when_nothing_legal():
     s = {"slots": {"UTIL": 1, "IR": 1}, "rounds": 2, "scoring": {"PTS": 1}}
     r = rec([(30, "UTIL|IR", "ACTIVE", 1), (20, "UTIL|IR", "ACTIVE", 1)], mine=[0], settings=s)
     assert list(r.index) == [1]
+    assert r.attrs["fallback"] is True  # M7: flagged so the UI can warn the user
+
+
+def test_recommend_no_fallback_flag_when_legal_picks_exist():
+    assert rec(ROWS).attrs["fallback"] is False
 
 
 def test_ir_early_boosts_injured_player():
