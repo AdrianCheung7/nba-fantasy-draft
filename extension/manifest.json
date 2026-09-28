@@ -10,6 +10,6 @@
   "side_panel": {"default_path": "sidepanel.html"},
   "content_scripts": [{
     "matches": ["https://fantasy.espn.com/basketball/draft*"],
-    "js": ["parse.js", "content.js"]
+    "js": ["parse.js", "single.js", "content.js"]
   }]
 }

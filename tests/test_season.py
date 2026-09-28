@@ -53,6 +53,12 @@ def test_pickups_open_roster_spot_needs_no_drop(world):
     assert p.loc[4, "drop"] == "" and p.loc[4, "ros_gain"] == 100  # 25/day x 4 days
 
 
+def test_pickups_full_active_roster_with_empty_ir_suggests_a_drop(world):
+    b, ev, G = world
+    p = pickups(b, ev, G, mine=[0, 1, 2], active=[0, 1, 2], free=[4], wk=WK, ros=ROS, settings=S)  # 3 = slots minus IR
+    assert p.loc[4, "drop"] == "P2" and p.loc[4, "ros_gain"] == 20  # 25 replaces the bench 5 and displaces B: +5 x 4 days
+
+
 def test_week_ev_scales_injuries(world):
     b, ev, G = world
     e = week_ev(b, ev, WK)

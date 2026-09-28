@@ -239,6 +239,31 @@ def report_from_rosters(rosters, b, settings, n_seasons=200, seed=0, schedule=No
     return team_table(m / n_seasons, settings["my_slot"] - 1)
 
 
+def from_draft(settings, n_seasons=200, data=DATA, b=None, schedule=None, matchups=None):
+    """Season-simulate the real (practice) draft in data/draft.json (player ids in overall order, null = unlisted,
+    which leaves that roster a player short). My team = the slot last_picks.json read off the page, else settings."""
+    ids = json.loads((data / "draft.json").read_text())
+    if b is None:
+        b = board(pd.read_csv(data / "projections.csv"), settings)
+    if schedule is None:
+        schedule = pd.read_csv(data / "schedule.csv")
+        matchups = pd.read_csv(data / "matchups.csv") if (data / "matchups.csv").exists() else None
+    idx = dict(zip(b.player_id, b.index))
+    rosters = [[] for _ in range(settings["teams"])]
+    for t, i in zip(snake(settings["teams"], settings["rounds"]), ids):
+        if i in idx:
+            rosters[t].append(idx[i])
+    try:
+        slot = json.loads((data / "last_picks.json").read_text()).get("slot")
+    except (OSError, ValueError):
+        slot = None
+    slot = slot or settings["my_slot"]
+    df = report_from_rosters(rosters, b, {**settings, "my_slot": slot}, n_seasons, schedule=schedule, matchups=matchups)
+    out = {"slot": slot, "n_seasons": n_seasons, "table": df.to_dict("records")}
+    (data / "report_from_draft.json").write_text(json.dumps(out, indent=2))
+    return df
+
+
 def best(df):
     # ["obj"], not .obj: GroupBy.obj is the whole grouped frame
     g = df.assign(obj=df.p_champion - df.p_bottom3).groupby("strategy")
@@ -253,13 +278,20 @@ def best(df):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--slot", type=int, required=True)
+    ap.add_argument("--slot", type=int)
     ap.add_argument("--drafts", type=int, default=20)
-    ap.add_argument("--seasons", type=int, default=20)
+    ap.add_argument("--seasons", type=int, help="default 20 (200 with --from-draft)")
+    ap.add_argument("--from-draft", action="store_true", help="season-simulate the rosters in data/draft.json")
     ap.add_argument("--report", action="store_true", help="our best strategy vs 13 near-optimal opponents")
     ap.add_argument("--settings", type=Path, default=ROOT / "settings.json")
     a = ap.parse_args()
+    if not (a.slot or a.from_draft):
+        ap.error("--slot is required")
     settings = json.loads(a.settings.read_text())
+    if a.from_draft:
+        print(from_draft(settings, a.seasons or 200).round(3).to_string(index=False))
+        return
+    a.seasons = a.seasons or 20
     league = {k: settings.get(k) for k in LEAGUE_KEYS}
     if a.report:
         f = DATA / f"strategy_slot{a.slot}.json"

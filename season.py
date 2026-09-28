@@ -48,7 +48,7 @@ def pickups(b, ev, G, mine, active, free, wk, ros, settings, n=15, k=50):
     evw, evr = week_ev(b, ev, wk), ev[:, ros]
     free = np.asarray(free, int)
     cand = np.unique(np.r_[free[np.argsort(-evw[free].sum(axis=1))[:k]], free[np.argsort(-evr[free].sum(axis=1))[:k]]])
-    drop = drop_candidate(evr, fit, cap, active) if len(mine) >= sum(settings["slots"].values()) else None
+    drop = drop_candidate(evr, fit, cap, active) if len(active) >= sum(settings["slots"].values()) - settings["slots"].get("IR", 0) else None
     a = np.array(active, int)
     rosters = np.array([[i for i in a if i != drop] + [c] for c in cand], int).reshape(len(cand), -1)
 

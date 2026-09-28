@@ -38,6 +38,7 @@ class App:
         self.lock = threading.RLock()
         self.mtime = None
         self.last = {"status": "no picks yet"}
+        self.slot = None  # my slot as read off the Picks panel (my team's pick), else settings
 
     def load(self):
         """Board + expected-value matrix; rebuilt only when settings.json changes."""
@@ -57,6 +58,12 @@ class App:
                 self.by_name.setdefault(norm(n), []).append(i)
             if "top" not in self.last:
                 self.last = {"status": "no picks yet", "teams": s["teams"]}
+            try:  # settings changed or server restarted: redo the last result
+                body = json.loads((self.data / "last_picks.json").read_text())
+                self.slot = body.get("slot") if self.slot is None else self.slot
+                self.compute(body)
+            except (OSError, ValueError):
+                pass
         return self.s
 
     def match(self, p):
@@ -67,34 +74,64 @@ class App:
         same = [i for i in cand if TEAMS.get(int(self.b.team_id.iat[i])) == abbr(p.get("nba_team", ""))]
         return (same or cand or [None])[0]
 
+    def write(self, name, obj):
+        f = self.data / name
+        tmp = f.with_suffix(".tmp")  # same write-then-rename as app.py
+        tmp.write_text(json.dumps(obj))
+        tmp.replace(f)
+
+    def known(self):
+        """Picks recorded so far (overall -> board index or None), read back from draft.json (app.py may edit it)."""
+        try:
+            ids = json.loads((self.data / "draft.json").read_text())
+        except (OSError, ValueError):
+            return {}
+        return {o: self.by_id.get(x) for o, x in enumerate(ids, 1)}
+
     def post(self, body):
         with self.lock:
-            s = self.load()
-            teams = s["teams"]
-            slots, unmatched = {}, []
-            for p in body["picks"]:
-                o = (p["round"] - 1) * teams + p["pick"]  # don't trust the client's team count
-                slots[o] = self.match(p)
-                if slots[o] is None:
-                    unmatched.append(p["name"])
-            n = max(slots, default=0)
-            picks = [{"overall": o, "player": slots.get(o)} for o in range(1, n + 1)]
-            ids = [None if x["player"] is None else int(self.b.player_id.iat[x["player"]]) for x in picks]
-            draft_file = self.data / "draft.json"
-            tmp = draft_file.with_suffix(".tmp")  # same write-then-rename as app.py
-            tmp.write_text(json.dumps(ids))
-            tmp.replace(draft_file)
-            r = draft.advise(self.b, self.ev, picks, s, s.get("strategy", "greedy"))
-            top = r["top"]
-            out = {**r, "top": json.loads(top.to_json(orient="records")), "fallback": bool(top.attrs.get("fallback")),
-                   "mapped": len(body["picks"]) - len(unmatched), "unmatched": unmatched, "n_picks": n,
-                   "teams": teams, "me": s["my_slot"] - 1}
-            self.last = json.loads(json.dumps(out, default=lambda o: o.item() if hasattr(o, "item") else str(o)))
-            return self.last
+            self.load()
+            return self.compute(body)
+
+    def compute(self, body):
+        s, teams = self.s, self.s["teams"]
+        new, unmatched, mine = {}, [], None
+        for p in body["picks"]:
+            # a "pick" above the team count can only be the overall number; don't trust the client's team count
+            o = p["pick"] if p["pick"] > teams else (p["round"] - 1) * teams + p["pick"]
+            new[o] = self.match(p)
+            if new[o] is None:
+                unmatched.append(p["name"])
+            if mine is None and p.get("fantasy_team") == s.get("my_team_name"):
+                r, k = divmod(o - 1, teams)  # snake: odd rounds go 1..N, even rounds N..1
+                mine = k + 1 if r % 2 == 0 else teams - k
+        known = self.known()
+        if known.get(1) is not None and 1 in new and new[1] != known[1]:  # pick 1 changed: a new draft
+            known, self.slot = {}, None
+        merged = {**known, **{o: v for o, v in new.items() if v is not None or o not in known}}  # never forget a pick
+        self.slot = mine or self.slot
+        slot = self.slot or s["my_slot"]
+        n = max(merged, default=0)
+        picks = [{"overall": o, "player": merged.get(o)} for o in range(1, n + 1)]
+        self.write("draft.json", [None if x["player"] is None else int(self.b.player_id.iat[x["player"]]) for x in picks])
+        self.write("last_picks.json", {**body, "slot": self.slot})
+        r = draft.advise(self.b, self.ev, picks, {**s, "my_slot": slot}, s.get("strategy", "greedy"))
+        top = r["top"]
+        out = {**r, "top": json.loads(top.to_json(orient="records")), "fallback": bool(top.attrs.get("fallback")),
+               "mapped": len(body["picks"]) - len(unmatched), "unmatched": unmatched, "n_picks": n,
+               "teams": teams, "me": slot - 1, "slot": slot}
+        if slot != s["my_slot"]:
+            out["warning"] = f"Your draft slot on this page is {slot}, settings say {s['my_slot']} \u2014 using {slot}"
+        self.last = json.loads(json.dumps(out, default=lambda o: o.item() if hasattr(o, "item") else str(o)))
+        return self.last
 
 
 def make_server(home, port=PORT):
     app = App(home)
+    try:
+        app.load()  # redo the last result right away
+    except (OSError, ValueError, KeyError):
+        pass  # data files missing before fetch.py has run
 
     class Handler(BaseHTTPRequestHandler):
         def send(self, code, obj=None):

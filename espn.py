@@ -63,6 +63,11 @@ def matchups(js, schedule):
     return pd.DataFrame(rows, columns=["date", "matchup", "playoff"]).sort_values("date").reset_index(drop=True)
 
 
+def is_real_calendar(m, js):
+    """False for ESPN's preseason placeholder (1 day per matchup)."""
+    return (~m.playoff).sum() >= 7 * js["settings"]["scheduleSettings"]["matchupPeriodCount"]
+
+
 def rosters(js):
     rows = [{"team_id": t["id"], "team_name": t["name"], "player_id": e["playerId"],
              "lineup_slot": fetch.SLOT_NAMES.get(e["lineupSlotId"], str(e["lineupSlotId"]))}
@@ -91,7 +96,7 @@ def main():
     tmp.write_text(json.dumps(new, indent=2))
     tmp.replace(path)
     m = matchups(js, pd.read_csv(DATA / "schedule.csv"))
-    real = (~m.playoff).sum() >= 7 * js["settings"]["scheduleSettings"]["matchupPeriodCount"]
+    real = is_real_calendar(m, js)
     if real:
         fetch.save(m, DATA / "matchups.csv")
     else:  # ESPN's preseason placeholder is 1 day per matchup; sim falls back to calendar weeks

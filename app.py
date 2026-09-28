@@ -93,6 +93,7 @@ with st.sidebar:
         if r.returncode:
             st.error((r.stderr.strip().splitlines() or ["sync failed"])[-1])
         else:
+            load_csv.clear()  # matchups.csv may have changed
             for k in [k for k in st.session_state if k in ("teams", "my_slot", "rounds", "po_teams", "po_weeks")
                       or k.startswith(("slot_", "sc_"))]:
                 del st.session_state[k]  # widgets would otherwise keep the old values and autosave them back
@@ -114,7 +115,6 @@ with st.sidebar:
             st.dataframe(pd.DataFrame(sim["table"]).round(3), hide_index=True)
     with st.expander("Reset draft"):
         if st.checkbox("Yes, clear every pick", key="confirm_reset") and st.button("Clear picks", key="reset"):
-            st.session_state.picks = []
             save_picks([])
             st.rerun()
 
@@ -165,17 +165,21 @@ def render_season():
         js = espn_league(str(HOME), s["league_id"], s["season"])
     except RuntimeError as e:
         return st.error(f"ESPN refused the request - the cookies in espn_auth.json are probably expired. ({e})")
-    win = window(days, period, pd.Timestamp.now("America/New_York").strftime("%Y-%m-%d"))
+    m = espn.matchups(js, sched)  # ESPN's own calendar; the placeholder (pre-season) keeps the calendar-week fallback
+    real = espn.is_real_calendar(m, js)
+    per = calendar(days, sched, s, m)[0] if real else period
+    win = window(days, per, pd.Timestamp.now("America/New_York").strftime("%Y-%m-%d"))
     if win is None:
         return st.info("The season is over.")
     p, wk, ros = win
+    mid = int(np.sort(m.matchup.unique())[p]) if real else int(p) + 1  # ESPN's matchup id
     idx = dict(zip(b.player_id, b.index))
     rows = espn.rosters(js)
     mine, active = split_roster(rows[rows.team_id == s["espn_team_id"]], idx)
     fit, cap = slot_fit(b, s)
     evw = week_ev(b, ev, wk)
-    st.subheader(f"This week's matchup (matchup {p + 1}, {int(wk.sum())} game days left)")
-    sc = espn.scores(js, int(p) + 1, s["espn_team_id"])
+    st.subheader(f"This week's matchup (matchup {mid}, {int(wk.sum())} game days left)")
+    sc = espn.scores(js, mid, s["espn_team_id"])
     if sc is None:
         st.info("No head-to-head game found for this matchup.")
     else:
@@ -202,9 +206,7 @@ def render_season():
 
 draft_tab, season_tab = st.tabs(["Draft", "Season"])
 with draft_tab:
-    if "picks" not in st.session_state:
-        st.session_state.picks = load_picks()
-    picks = st.session_state.picks
+    picks = load_picks()  # every rerun: the extension's server rewrites draft.json while a draft is running
     idx = dict(zip(b.player_id, b.index))
     pname = dict(zip(b.player_id, b["name"]))
     pos = dict(zip(b.player_id, b.positions))

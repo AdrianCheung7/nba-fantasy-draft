@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import threading
 import urllib.error
@@ -18,6 +19,8 @@ STATS = ["PTS", "FGM", "FGA", "FTM", "FTA", "3PM", "3PA", "OREB", "DREB", "AST",
 PLAYERS = [(3112335, "Nikola Jokic", 7), (3032977, "Giannis Antetokounmpo", 14), (4432166, "Cade Cunningham", 8),
            (5217746, "Yang Hansen", 22), (1, "Jalen Williams", 2), (2, "Jalen Williams", 25)]
 
+SEEN = []  # settings each fake advise call received
+
 
 @pytest.fixture
 def home(tmp_path):
@@ -34,9 +37,11 @@ def home(tmp_path):
 @pytest.fixture
 def api(home, monkeypatch):
     calls = []
+    SEEN.clear()
 
     def fake_advise(b, ev, picks, settings, strategy="greedy"):
         calls.append(picks)
+        SEEN.append(settings)
         top = pd.DataFrame({"player_id": [1], "name": ["X"], "pos": ["C"], "fp_pg": [1.5], "games": [70.0],
                             "value": [100.0], "p_back": [0.5]})
         top.attrs["fallback"] = False
@@ -106,3 +111,64 @@ def test_only_extension_origin_allowed(api):
             call(path, body, origin="https://evil.example")
         assert e.value.code == 403
     assert call("/state", origin="chrome-extension://abc")[0]["status"] == "no picks yet"
+
+
+def players(calls):
+    return [p["player"] for p in calls[-1]]
+
+
+def test_partial_repost_never_forgets_picks(api, home):
+    call, calls = api
+    call("/picks", {"picks": [pick(1, "Nikola Jokic", 3112335), pick(2, "Giannis Antetokounmpo", 3032977),
+                              pick(3, "Cade Cunningham", 4432166)]})
+    call("/picks", {"picks": [pick(3, "Cade Cunningham", 4432166)]})  # lazy-loaded / filtered Picks panel
+    assert players(calls) == [0, 1, 2]
+    assert json.loads((home / "data" / "draft.json").read_text()) == [3112335, 3032977, 4432166]
+    call("/picks", {"picks": [pick(1, "Nikola Jokic", 3112335), pick(4, "Yang Hansen", 5217746)]})
+    assert players(calls) == [0, 1, 2, 3]
+
+
+def test_new_draft_resets_when_pick_one_differs(api, home):
+    call, calls = api
+    call("/picks", {"picks": [pick(1, "Nikola Jokic", 3112335), pick(2, "Giannis Antetokounmpo", 3032977)]})
+    call("/picks", {"picks": [pick(1, "Cade Cunningham", 4432166)]})
+    assert players(calls) == [2]
+    assert json.loads((home / "data" / "draft.json").read_text()) == [4432166]
+
+
+def test_pick_number_beyond_team_count_is_overall(api):
+    call, calls = api
+    p = pick(17, "Yang Hansen", 5217746)
+    call("/picks", {"picks": [pick(1, "Nikola Jokic", 3112335), {**p, "round": 2}]})
+    assert [x["overall"] for x in calls[-1]] == list(range(1, 18)) and calls[-1][16]["player"] == 3
+
+
+def test_my_slot_derived_from_my_team_name(api):
+    call, calls = api
+    mine = {**pick(3, "Nikola Jokic", 3112335), "round": 2, "fantasy_team": "Raj"}  # round 2, pick 3 of 14 -> slot 12
+    r, _ = call("/picks", {"picks": [mine]})
+    assert SEEN[-1]["my_slot"] == 12 and r["slot"] == 12 and r["me"] == 11
+    assert "12" in r["warning"] and "9" in r["warning"]
+    r, _ = call("/picks", {"picks": [{**pick(9, "Nikola Jokic", 3112335), "fantasy_team": "Raj"}]})  # odd round: pick 9
+    assert SEEN[-1]["my_slot"] == 9 and r["slot"] == 9 and "warning" not in r
+    r, _ = call("/picks", {"picks": [pick(1, "Nikola Jokic", 3112335)]})  # none of mine on the page: settings slot
+    assert r["slot"] == 9 and "warning" not in r
+
+
+def test_recompute_on_settings_change_and_restart(api, home):
+    call, calls = api
+    call("/picks", {"picks": [pick(1, "Nikola Jokic", 3112335)]})
+    n = len(calls)
+    f = home / "settings.json"
+    f.write_text(json.dumps({**json.loads(f.read_text()), "my_slot": 5}))
+    os.utime(f, (f.stat().st_atime, f.stat().st_mtime + 5))
+    r, _ = call("/state")
+    assert len(calls) == n + 1 and r["me"] == 4 and r["top"][0]["name"] == "X"
+    srv = server.make_server(home, 0)  # restart: last result comes back without a new POST
+    try:
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        with urllib.request.urlopen(f"http://127.0.0.1:{srv.server_address[1]}/state") as resp:
+            assert json.loads(resp.read())["me"] == 4
+    finally:
+        srv.shutdown()
+        srv.server_close()

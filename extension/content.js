@@ -1,5 +1,5 @@
 // Reads the Picks panel, posts it to the local server, highlights the top 5 in ESPN's player list.
-// parse.js is loaded first (shared content-script scope).
+// parse.js and single.js are loaded first (shared content-script scope).
 let teams = 14;
 let sent = "";     // last pick list the server accepted
 let best = [];     // top-5 from the last response
@@ -43,18 +43,19 @@ function update() {
   obs.observe(document.body, { childList: true, subtree: true, characterData: true });
 }
 
-function run() {
+const run = singleFlight((done) => {
   const picks = parsePicks(document, teams);
   const key = JSON.stringify(picks);
-  if (key === sent || !picks.length) return update(); // never post an empty list: panel may just not be rendered
+  if (key === sent || !picks.length) return update(), done(true); // never post an empty list: panel may just not be rendered
   chrome.runtime.sendMessage({ picks, url: location.href }, (r) => {
-    if (chrome.runtime.lastError || !r || r.error) return void setTimeout(run, 2000); // server down: retry
+    if (chrome.runtime.lastError || !r || r.error) return done(false); // server down: singleFlight retries
     sent = key;
     teams = r.teams || teams;
     best = (r.top || []).slice(0, 5);
     update();
+    done(true);
   });
-}
+}, 2000);
 
 const obs = new MutationObserver(() => {
   clearTimeout(timer);

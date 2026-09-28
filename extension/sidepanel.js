@@ -7,13 +7,16 @@ function render(s) {
     $("turn").textContent = "Waiting for picks";
     $("until").textContent = "Open the ESPN draft room and its Picks panel.";
     $("note").textContent = "";
+    $("warn").hidden = true;
     $("top").innerHTML = $("roster").innerHTML = $("needs").innerHTML = "";
     return;
   }
   const mine = s.on_clock === s.me;
-  $("turn").textContent = mine ? "YOUR PICK" : `Team ${s.on_clock + 1} on the clock`;
+  $("warn").textContent = s.warning || "";
+  $("warn").hidden = !s.warning;
+  $("turn").textContent = s.on_clock == null ? "Draft complete" : mine ? "YOUR PICK" : `Team ${s.on_clock + 1} on the clock`;
   const next = s.my_next == null ? null : s.my_next - (s.n_picks + 1);
-  $("until").textContent = mine ? "" : next == null ? "No picks left for you." : `${next} pick${next === 1 ? "" : "s"} until yours`;
+  $("until").textContent = s.on_clock == null || mine ? "" : next == null ? "No picks left for you." : `${next} pick${next === 1 ? "" : "s"} until yours`;
   $("note").textContent = (s.fallback ? "No fully legal pick left - showing best available. " : "") +
     (s.unmatched.length ? `Not on board: ${s.unmatched.join(", ")}` : "");
   $("top").innerHTML = s.top.map((p, i) => `<tr class="${i ? "" : "best"}"><td>${esc(p.name)}</td><td>${esc(pos(p.pos))}</td>` +
@@ -35,4 +38,4 @@ async function poll() {
   }
 }
 poll();
-setInterval(poll, 1000);
+setInterval(poll, 500);

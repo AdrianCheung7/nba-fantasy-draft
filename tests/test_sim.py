@@ -1,3 +1,4 @@
+import json
 import sys
 from itertools import combinations
 from pathlib import Path
@@ -142,7 +143,7 @@ def test_espn_pick_unranked_after_ranked_then_by_value():
 
 
 from draft import STRATEGIES
-from sim import best, report, report_from_rosters, run
+from sim import best, from_draft, report, report_from_rosters, run
 
 
 def test_run_smoke():
@@ -172,6 +173,20 @@ def test_report_from_rosters_stronger_team_wins_more():
     df = report_from_rosters([[0, 1], [2, 3]], b, s, n_seasons=10, schedule=make_schedule())
     assert df.us.tolist() == [True, False] and df.p_champion.tolist() == [1.0, 0.0]
     assert df.avg_wins.iloc[0] == 3
+
+
+def test_from_draft_builds_snake_rosters_and_marks_my_team(tmp_path):
+    s = {**TINY, "teams": 2, "my_slot": 1}
+    b = make_board([(40, "UTIL|BE", "ACTIVE", 1, 0.1), (30, "UTIL|BE", "ACTIVE", 2, 0.1),
+                    (5, "UTIL|BE", "ACTIVE", 1, 0.1), (4, "UTIL|BE", "ACTIVE", 2, 0.1)], s)
+    (tmp_path / "draft.json").write_text("[100, 101, 102, 103]")  # snake: team 1 gets 100 + 103, team 2 gets 101 + 102
+    df = from_draft(s, 10, tmp_path, b=b, schedule=make_schedule())
+    assert df.us.tolist() == [True, False] and df.p_champion.tolist() == [1.0, 0.0]  # 40 + 4 beats 30 + 5
+    assert json.loads((tmp_path / "report_from_draft.json").read_text())["slot"] == 1
+    (tmp_path / "last_picks.json").write_text('{"picks": [], "slot": 2}')  # the page said I am team 2
+    (tmp_path / "draft.json").write_text("[100, null, 102, 103]")  # an unlisted pick just leaves a roster short
+    df = from_draft(s, 10, tmp_path, b=b, schedule=make_schedule())
+    assert df.us.tolist() == [False, True]
 
 
 def test_best_keeps_greedy_when_gap_within_noise():

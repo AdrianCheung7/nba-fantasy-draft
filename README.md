@@ -32,6 +32,7 @@ python model.py --backtest # model accuracy vs. "repeat last season"
 python model.py            # writes data/projections.csv
 python sim.py --slot 7   # optional: best strategy for slot 7 (~4 min)
 python sim.py --report --slot 7  # optional: that strategy vs 13 near-optimal teams -> data/report_slot7.json
+python sim.py --from-draft  # season-simulate the 14 real rosters in data/draft.json -> data/report_from_draft.json
 streamlit run app.py       # opens http://localhost:8501
 pytest                     # tests
 ```

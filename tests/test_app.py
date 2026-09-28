@@ -50,6 +50,17 @@ def test_draft_unlisted_and_undo(at, home):
     assert saved_picks(home) == [pid] and not at.exception
 
 
+def test_draft_tab_follows_draft_json_written_by_the_extension(at, home):
+    pid = int(pd.read_csv(home / "data" / "projections.csv").player_id.iloc[0])
+    assert "pick 1:" in at.header[0].value
+    (home / "data" / "draft.json").write_text(json.dumps([pid]))  # what server.py writes
+    at.run()
+    assert "pick 2:" in at.header[0].value
+    at.selectbox(key="pick_1").set_value(-1).run()
+    at.button(key="drafted").click().run()
+    assert saved_picks(home) == [pid, None]  # the app appends to what the server wrote
+
+
 def test_changing_team_count_keeps_working(at):
     at.selectbox(key="teams").set_value(10).run()
     assert not at.exception
@@ -129,6 +140,24 @@ def test_sync_failure_shows_message(at, monkeypatch):
     assert any("need espn_auth.json" in e.value for e in at.error)
 
 
+def test_season_tab_uses_espn_matchup_calendar(at, home, monkeypatch):
+    """One long ESPN matchup (id 3, no data/matchups.csv): its scores are looked up by ESPN's id, not by period + 1."""
+    import espn
+    ids = pd.read_csv(home / "data" / "projections.csv").player_id.astype(int).tolist()
+    ent = lambda pids, slots: [{"playerId": p, "lineupSlotId": sl} for p, sl in zip(pids, slots)]
+    js = {"teams": [{"id": 13, "name": "Raj", "roster": {"entries": ent(ids[20:34], [5] * 2 + [12] * 10 + [13] * 2)}},
+                    {"id": 1, "name": "Rivals", "roster": {"entries": ent(ids[40:45], [5] * 5)}}],
+          "settings": {"scheduleSettings": {"matchupPeriodCount": 3, "matchupPeriods": {"3": list(range(1, 300))}}},
+          "schedule": [{"matchupPeriodId": 3, "home": {"teamId": 13, "totalPoints": 11.0},
+                        "away": {"teamId": 1, "totalPoints": 22.0}}]}
+    (home / "espn_auth.json").write_text('{"espn_s2": "x", "SWID": "{y}"}')
+    monkeypatch.setattr(espn, "league", lambda *a, **k: js)
+    from streamlit.testing.v1 import AppTest
+    at2 = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60).run()
+    assert not at2.exception and not at2.error
+    assert [d.value["Points so far"].tolist() for d in at2.dataframe if "Points so far" in d.value] == [[11, 22]]
+
+
 def test_season_tab_shows_matchup_and_pickups(at, home, monkeypatch):
     """A synthetic ESPN league: me (team 13) with 14 players vs team 1 with 5; everyone else in the pool is free."""
     import espn
@@ -136,6 +165,7 @@ def test_season_tab_shows_matchup_and_pickups(at, home, monkeypatch):
     ent = lambda pids, slots: [{"playerId": p, "lineupSlotId": sl} for p, sl in zip(pids, slots)]
     js = {"teams": [{"id": 13, "name": "Raj", "roster": {"entries": ent(ids[20:34], [5] * 2 + [12] * 10 + [13] * 2)}},
                     {"id": 1, "name": "Rivals", "roster": {"entries": ent(ids[40:45], [5] * 5)}}],
+          "settings": {"scheduleSettings": {"matchupPeriodCount": 19, "matchupPeriods": {"1": [1]}}},  # placeholder
           "schedule": [{"matchupPeriodId": 1, "home": {"teamId": 13, "totalPoints": 10.0},
                         "away": {"teamId": 1, "totalPoints": 20.0}}]}
     (home / "espn_auth.json").write_text('{"espn_s2": "x", "SWID": "{y}"}')

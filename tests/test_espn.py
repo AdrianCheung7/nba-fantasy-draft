@@ -49,6 +49,13 @@ def test_matchups_use_espn_calendar():
     assert m[m.playoff].matchup.tolist() == [20, 20, 21, 21] and not m[m.matchup == 19].playoff.any()
 
 
+def test_is_real_calendar():
+    assert not espn.is_real_calendar(espn.matchups(JS, SCHED), JS)  # fixture = 1-day-per-matchup placeholder
+    js = json.loads(json.dumps(JS))
+    js["settings"]["scheduleSettings"].update(matchupPeriodCount=1, matchupPeriods={"1": list(range(1, 15))})
+    assert espn.is_real_calendar(espn.matchups(js, SCHED), js)
+
+
 def test_rosters():
     df = espn.rosters(JS)
     assert list(df.columns) == ["team_id", "team_name", "player_id", "lineup_slot"]

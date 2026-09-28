@@ -14,10 +14,12 @@
   tr.best td { background: var(--hi); font-weight: 600; }
   .mute { color: var(--mute); }
   .down { background: #b91c1c; color: #fff; padding: 14px; border-radius: 6px; font-weight: 600; }
-  #ok[hidden], #down[hidden] { display: none; }
+  .warn { background: #f59e0b; color: #000; padding: 10px; border-radius: 6px; font-weight: 600; margin-bottom: 8px; }
+  #ok[hidden], #down[hidden], #warn[hidden] { display: none; }
 </style>
 <div id="down" class="down" hidden>App not running &mdash; double-click Start Draft App</div>
 <div id="ok" hidden>
+  <div id="warn" class="warn" hidden></div>
   <h1 id="turn"></h1>
   <div id="until" class="mute"></div>
   <div id="note" class="mute"></div>
