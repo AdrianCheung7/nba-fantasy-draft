@@ -30,6 +30,7 @@ pip install -r requirements.txt
 python fetch.py            # ~10 min the first time: free ESPN data into data/
 python model.py --backtest # model accuracy vs. "repeat last season"
 python model.py            # writes data/projections.csv
+python sim.py --slot 7   # optional: best strategy for slot 7 (~4 min)
 streamlit run app.py       # opens http://localhost:8501
 pytest                     # tests
 ```

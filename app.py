@@ -1,5 +1,6 @@
 """Draft-day assistant.  Run: streamlit run app.py"""
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -8,14 +9,19 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from draft import STRATEGIES, board, day_matrix, ev_matrix, picks_before_next, recommend, snake, survive
+from draft import STRATEGIES, board, day_matrix, ev_matrix, picks_before_next, recommend, snake, starters, survive
 from fetch import SLOT_NAMES
+from sim import validate
 
 ROOT = Path(__file__).parent
-DATA = ROOT / "data"
-SETTINGS = ROOT / "settings.json"
+# DRAFT_HOME lets tests point settings/picks/data at a tmp dir instead of the real repo (M8); sim.py's
+# heavy simulation always runs against the real repo regardless (see the "simulate" button below).
+HOME = Path(os.environ.get("DRAFT_HOME", ROOT))
+DATA = HOME / "data"
+SETTINGS = HOME / "settings.json"
 DRAFT = DATA / "draft.json"
 UNLISTED = "(player not listed)"
+LEAGUE_KEYS = ("teams", "rounds", "slots", "scoring", "playoff_teams", "playoff_weeks")
 
 st.set_page_config(page_title="Fantasy Draft Assistant", layout="wide")
 
@@ -51,8 +57,14 @@ s = json.loads(SETTINGS.read_text())
 
 with st.sidebar:
     s["teams"] = st.selectbox("Teams", list(range(8, 21)), index=min(max(s["teams"], 8), 20) - 8, key="teams")
+    # F1: clamp to the session's current my_slot (if the widget already has one) so reducing "Teams"
+    # can't leave a stale, out-of-range value in session_state for the selectbox below.
+    cur_slot = st.session_state.get("my_slot", s["my_slot"])
+    if cur_slot > s["teams"]:
+        st.session_state.my_slot = s["teams"]
+        cur_slot = s["teams"]
     s["my_slot"] = st.selectbox("My draft slot", list(range(1, s["teams"] + 1)),
-                                index=min(s["my_slot"], s["teams"]) - 1, key="my_slot")
+                                index=min(cur_slot, s["teams"]) - 1, key="my_slot")
     with st.expander("League settings"):
         s["rounds"] = st.number_input("Rounds", 1, 30, s["rounds"], key="rounds")
         st.caption("Roster slots")
@@ -65,16 +77,20 @@ with st.sidebar:
         s["playoff_teams"] = st.number_input("Playoff teams", 2, s["teams"], min(s["playoff_teams"], s["teams"]),
                                              key="po_teams")
         s["playoff_weeks"] = st.number_input("Playoff weeks", 1, 6, s["playoff_weeks"], key="po_weeks")
-        if st.button("Save settings", key="save"):
-            SETTINGS.write_text(json.dumps(s, indent=2))
-            st.success("Saved to settings.json")
     if s["rounds"] > sum(s["slots"].values()):
         st.warning("More rounds than roster spots: extra picks can't be rostered.")
 
     strat_file = DATA / f"strategy_slot{s['my_slot']}.json"
     sim = json.loads(strat_file.read_text()) if strat_file.exists() else None
+    default = s.get("strategy", "greedy")
+    if sim is not None:
+        if sim.get("league") == {k: s[k] for k in LEAGUE_KEYS}:
+            default = sim["best"]
+        else:  # M10: league settings changed since this simulation ran; don't trust it
+            st.caption("Strategy results are for different league settings - rerun.")
+            sim = None
+            default = "greedy"
     strat_names = list(STRATEGIES)
-    default = sim["best"] if sim else s.get("strategy", "greedy")
     with st.expander("Strategy"):
         s["strategy"] = st.selectbox("Strategy", strat_names,
                                      index=strat_names.index(default) if default in strat_names else 0, key="strategy")
@@ -96,6 +112,20 @@ with st.sidebar:
             save_picks([])
             st.rerun()
 
+# F1: autosave whatever the sidebar landed on, so a refresh/restart resumes from it instead of resetting
+# to the settings.json snapshot that existed before this session started editing.
+if s != json.loads(SETTINGS.read_text()):
+    SETTINGS.write_text(json.dumps(s, indent=2))
+
+# F5: reject settings the engine can't handle before computing any recommendations.
+try:
+    validate(s, s["my_slot"])
+    if len(starters(s)) > s["rounds"]:
+        raise ValueError(f"roster needs {len(starters(s))} starter slots but only {s['rounds']} rounds are set")
+except ValueError as e:
+    st.error(str(e))
+    st.stop()
+
 b = board(load_csv("projections.csv"), s)
 sched = load_csv("schedule.csv")
 G, days = day_matrix(b, sched)
@@ -114,6 +144,11 @@ me = s["my_slot"] - 1
 n = len(picks)
 taken = {idx.get(p) for p in picks}  # None = unlisted player
 mine = [idx[p] for p, t in zip(picks, order) if t == me and p in idx]
+u = sum(1 for p, t in zip(picks, order) if t == me and p not in idx)  # F4: my "not listed"/unknown picks
+# feasibility must count those u picks as spent rounds and a filled bench spot, or it thinks I have
+# more picks and roster room left than I actually do (engine itself is unchanged, per the ruling)
+rec_settings = s if not u else {**s, "rounds": s["rounds"] - u,
+                                "slots": {**s["slots"], "BE": max(0, s["slots"].get("BE", 0) - u)}}
 
 done = n >= len(order)
 if done:
@@ -137,7 +172,10 @@ if c2.button("Undo last pick", disabled=not picks, key="undo"):
     st.rerun()
 if not done:
     gap = picks_before_next(order, n if on_clock == me else n - 1, me)
-    rec = recommend(b, ev, mine, taken, s, s["strategy"], po_mask if s["strategy"] == "playoffs" else None).head(10)
+    full_rec = recommend(b, ev, mine, taken, rec_settings, s["strategy"],
+                         po_mask if s["strategy"] == "playoffs" else None)
+    fallback = bool(full_rec.attrs.get("fallback"))
+    rec = full_rec.head(10)
     rec["survive"] = survive(b, list(rec.index), taken, gap, np.random.default_rng(0)).values
     st.subheader("Take now" if on_clock == me else "Best options for your next pick")
     st.dataframe(pd.DataFrame({
@@ -150,12 +188,18 @@ if not done:
     }), hide_index=True)
     st.caption("Value = season points the player adds to your lineup. "
                "% still there = chance they are still available at your next pick.")
+    if fallback:  # M7
+        st.caption("No fully legal pick left - showing best available.")
 
 left, right = st.columns(2)
 left.subheader("My roster")
-left.dataframe(pd.DataFrame({"Player": b.loc[mine, "name"], "Pos": b.loc[mine, "positions"].map(short_pos),
-                             "Pts/game": b.loc[mine, "fp_pg"].round(1), "Games": b.loc[mine, "gp"].round(0)}),
-               hide_index=True)
+roster = pd.DataFrame({"Player": b.loc[mine, "name"], "Pos": b.loc[mine, "positions"].map(short_pos),
+                       "Pts/game": b.loc[mine, "fp_pg"].round(1), "Games": b.loc[mine, "gp"].round(0)})
+if u:  # F4: one row per "not listed"/unknown pick, so the roster reflects every pick I've made
+    roster = pd.concat([roster, pd.DataFrame({"Player": [UNLISTED] * u, "Pos": [""] * u,
+                                              "Pts/game": [np.nan] * u, "Games": [np.nan] * u})],
+                       ignore_index=True)
+left.dataframe(roster, hide_index=True)
 right.subheader("Pick log")
 right.dataframe(pd.DataFrame({
     "pick": list(range(n, 0, -1)),
