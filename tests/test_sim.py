@@ -102,3 +102,17 @@ def test_adp_pick_unranked_after_ranked_then_by_value():
         rng = np.random.default_rng(seed)
         assert adp_pick(b, [], set(), TINY, rng) == 0
         assert adp_pick(b, [], {0}, TINY, rng) == 2
+
+
+from draft import STRATEGIES
+from sim import best, run
+
+
+def test_run_smoke():
+    s = {**TINY, "teams": 4}
+    b = make_board([(40 - 3 * i, "UTIL|BE|IR", "OUT" if i == 5 else "ACTIVE", 1 + i % 4, 0.3)
+                    for i in range(12)], s)
+    df = run(s, 2, n_drafts=2, n_seasons=3, b=b, schedule=make_schedule())
+    assert len(df) == len(STRATEGIES) * 2
+    assert df[["p_champion", "p_playoffs", "p_bottom3"]].stack().between(0, 1).all()
+    assert best(df) in STRATEGIES

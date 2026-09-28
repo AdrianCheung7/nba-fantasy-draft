@@ -2,6 +2,8 @@
 Run: python sim.py --slot 5 [--drafts 20 --seasons 20]"""
 import argparse
 import json
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -119,3 +121,74 @@ def sim_draft(b, ev, settings, me, strategy, opp, po_mask, rng):
         rosters[t].append(pick)
         taken.add(pick)
     return rosters
+
+
+def trim(b, settings):
+    """Speed: drop players nobody drafts, but keep injured stars (IR stash candidates)."""
+    n = settings["teams"] * settings["rounds"] + 80
+    keep = (b.season_fp.rank(ascending=False) <= n) | (b.ir_ok & (b.fp_pg.rank(ascending=False) <= 150))
+    return b[keep].reset_index(drop=True)
+
+
+def one_draft(job, b, ev, G, week_idx, n_weeks, n_reg, po_mask, po_weeks, settings, me, seed, n_seasons):
+    """One draft + its seasons -> summed [champion, playoffs, bottom3, wins] for my team."""
+    strat, opp, d = job
+    p, teams, n_start = settings["playoff_teams"], settings["teams"], len(starters(settings))
+    # common random numbers: draft d / its seasons use the same seeds for every strategy
+    rosters = sim_draft(b, ev, settings, me, strat, opp, po_mask, np.random.default_rng([seed, d, 0]))
+    rng = np.random.default_rng([seed, d, 1])
+    m = np.zeros(4)
+    for _ in range(n_seasons):
+        weekly = sim_season(rosters, b, G, week_idx, n_weeks, n_start, rng)
+        rank, wins = regular_season(weekly, n_reg)
+        place = int(np.flatnonzero(rank == me)[0])
+        m += [playoffs(list(rank[:p]), weekly, po_weeks) == me, place < p, place >= teams - 3, wins[me]]
+    return m
+
+
+def run(settings, slot, n_drafts=20, n_seasons=20, seed=0, strategies=None, b=None, schedule=None):
+    validate(settings, slot)
+    b = board(pd.read_csv(DATA / "projections.csv"), settings) if b is None else b
+    schedule = pd.read_csv(DATA / "schedule.csv") if schedule is None else schedule
+    b = trim(b, settings)
+    G, days = day_matrix(b, schedule)
+    ev = ev_matrix(b, G)
+    week = schedule.drop_duplicates("date").set_index("date").week.reindex(days).values
+    n_weeks = int(week.max())
+    n_reg = n_weeks - settings["playoff_weeks"]
+    po_mask, po_weeks = week > n_reg, list(range(n_reg, n_weeks))
+    ctx = dict(b=b, ev=ev, G=G, week_idx=week - 1, n_weeks=n_weeks, n_reg=n_reg, po_mask=po_mask,
+               po_weeks=po_weeks, settings=settings, me=slot - 1, seed=seed, n_seasons=n_seasons)
+    jobs = [(strat, opp, d) for strat in strategies or list(STRATEGIES) for opp in OPPONENTS for d in range(n_drafts)]
+    # drafts are pandas-bound (~10 s each); independent + seeded per job, so results match a serial run exactly
+    with ProcessPoolExecutor() as pool:
+        sums = list(pool.map(partial(one_draft, **ctx), jobs))
+    rows = []
+    for i in range(0, len(jobs), n_drafts):
+        m = np.sum(sums[i:i + n_drafts], axis=0) / (n_drafts * n_seasons)
+        rows.append({"strategy": jobs[i][0], "opponents": jobs[i][1], "p_champion": m[0], "p_playoffs": m[1],
+                     "p_bottom3": m[2], "avg_wins": m[3]})
+    return pd.DataFrame(rows)
+
+
+def best(df):
+    # ["obj"], not .obj: GroupBy.obj is the whole grouped frame
+    return df.assign(obj=df.p_champion - df.p_bottom3).groupby("strategy")["obj"].mean().idxmax()
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--slot", type=int, required=True)
+    ap.add_argument("--drafts", type=int, default=20)
+    ap.add_argument("--seasons", type=int, default=20)
+    a = ap.parse_args()
+    settings = json.loads((ROOT / "settings.json").read_text())
+    df = run(settings, a.slot, a.drafts, a.seasons)
+    print(df.round(3).to_string(index=False))
+    out = {"best": best(df), "table": df.to_dict("records")}
+    (DATA / f"strategy_slot{a.slot}.json").write_text(json.dumps(out, indent=2))
+    print("best:", out["best"])
+
+
+if __name__ == "__main__":
+    main()
