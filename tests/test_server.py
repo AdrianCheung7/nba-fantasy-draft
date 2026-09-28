@@ -47,9 +47,10 @@ def api(home, monkeypatch):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{srv.server_address[1]}"
 
-    def call(path, body=None, method=None):
+    def call(path, body=None, method=None, origin=None):
         req = urllib.request.Request(base + path, method=method or ("POST" if body is not None else "GET"),
-                                     data=None if body is None else json.dumps(body).encode())
+                                     data=None if body is None else json.dumps(body).encode(),
+                                     headers={"Origin": origin} if origin else {})
         with urllib.request.urlopen(req) as r:
             return json.loads(r.read() or b"null"), r.headers
 
@@ -96,3 +97,12 @@ def test_bad_body(api):
     with pytest.raises(urllib.error.HTTPError) as e:
         call("/picks", {"picks": "nope"})
     assert e.value.code == 400
+
+
+def test_only_extension_origin_allowed(api):
+    call, _ = api
+    for path, body in (("/picks", {"picks": [pick(1, "Nikola Jokic", 3112335)]}), ("/state", None)):
+        with pytest.raises(urllib.error.HTTPError) as e:
+            call(path, body, origin="https://evil.example")
+        assert e.value.code == 403
+    assert call("/state", origin="chrome-extension://abc")[0]["status"] == "no picks yet"

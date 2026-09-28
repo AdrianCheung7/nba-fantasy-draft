@@ -11,7 +11,7 @@ import streamlit as st
 
 from draft import STRATEGIES, advise, board, day_matrix, ev_matrix, snake, starters
 from fetch import SLOT_NAMES
-from sim import calendar, validate
+from sim import LEAGUE_KEYS, calendar, validate
 
 ROOT = Path(__file__).parent
 # DRAFT_HOME lets tests point settings/picks/data at a tmp dir instead of the real repo (M8); sim.py's
@@ -21,7 +21,6 @@ DATA = HOME / "data"
 SETTINGS = HOME / "settings.json"
 DRAFT = DATA / "draft.json"
 UNLISTED = "(player not listed)"
-LEAGUE_KEYS = ("teams", "rounds", "slots", "scoring", "playoff_teams", "playoff_weeks")
 
 st.set_page_config(page_title="Fantasy Draft Assistant", layout="wide")
 
@@ -80,7 +79,7 @@ with st.sidebar:
     sim = json.loads(strat_file.read_text()) if strat_file.exists() else None
     default = s.get("strategy", "greedy")
     if sim is not None:
-        if sim.get("league") == {k: s[k] for k in LEAGUE_KEYS}:
+        if sim.get("league") == {k: s.get(k) for k in LEAGUE_KEYS}:
             default = sim["best"]
         else:  # M10: league settings changed since this simulation ran; don't trust it
             st.caption("Strategy results are for different league settings - rerun.")

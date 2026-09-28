@@ -20,7 +20,7 @@ DATA = ROOT / "data"
 # 0.02 -> 0.285, 0.01 -> 0.188. Re-calibrate if league size or projections change a lot.
 NOISE = 0.03
 OPPONENTS = ("greedy", "espn")
-LEAGUE_KEYS = ("teams", "rounds", "slots", "scoring", "playoff_teams", "playoff_weeks")
+LEAGUE_KEYS = ("teams", "rounds", "slots", "scoring", "playoff_teams", "playoff_weeks", "playoff_round_periods")
 
 
 def round_robin(n):
@@ -260,7 +260,7 @@ def main():
     ap.add_argument("--settings", type=Path, default=ROOT / "settings.json")
     a = ap.parse_args()
     settings = json.loads(a.settings.read_text())
-    league = {k: settings[k] for k in LEAGUE_KEYS}
+    league = {k: settings.get(k) for k in LEAGUE_KEYS}
     if a.report:
         f = DATA / f"strategy_slot{a.slot}.json"
         saved = json.loads(f.read_text()) if f.exists() else {}

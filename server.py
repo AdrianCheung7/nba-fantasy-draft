@@ -110,7 +110,14 @@ def make_server(home, port=PORT):
         def do_OPTIONS(self):
             self.send(204)
 
+        def foreign(self):
+            # only the extension (or local tools that send no Origin) may read or post picks, not web pages
+            o = self.headers.get("Origin")
+            return o is not None and not o.startswith("chrome-extension://")
+
         def do_GET(self):
+            if self.foreign():
+                return self.send(403, {"error": "forbidden origin"})
             if self.path != "/state":
                 return self.send(404, {"error": "not found"})
             try:
@@ -120,6 +127,8 @@ def make_server(home, port=PORT):
             self.send(200, app.last)
 
         def do_POST(self):
+            if self.foreign():
+                return self.send(403, {"error": "forbidden origin"})
             if self.path != "/picks":
                 return self.send(404, {"error": "not found"})
             try:
