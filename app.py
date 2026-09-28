@@ -38,6 +38,10 @@ def save_picks(picks):
     tmp.replace(DRAFT)
 
 
+def short_pos(p):
+    return ", ".join(x for x in p.split("|") if x not in ("BE", "IR", "UTIL"))
+
+
 missing = [f for f in ("projections.csv", "schedule.csv") if not (DATA / f).exists()]
 if missing:
     st.error(f"Missing data files: {missing}. Run `python fetch.py` then `python model.py`, then reload.")
@@ -46,21 +50,24 @@ if missing:
 s = json.loads(SETTINGS.read_text())
 
 with st.sidebar:
-    st.header("League")
     s["teams"] = st.selectbox("Teams", list(range(8, 21)), index=min(max(s["teams"], 8), 20) - 8, key="teams")
     s["my_slot"] = st.selectbox("My draft slot", list(range(1, s["teams"] + 1)),
                                 index=min(s["my_slot"], s["teams"]) - 1, key="my_slot")
-    s["rounds"] = st.number_input("Rounds", 1, 30, s["rounds"], key="rounds")
-    with st.expander("Roster slots"):
+    with st.expander("League settings"):
+        s["rounds"] = st.number_input("Rounds", 1, 30, s["rounds"], key="rounds")
+        st.caption("Roster slots")
         slots = {n: st.number_input(n, 0, 15, s["slots"].get(n, 0), key=f"slot_{n}") for n in SLOT_NAMES.values()}
         s["slots"] = {n: v for n, v in slots.items() if v}
-    with st.expander("Scoring"):
+        st.caption("Scoring")
         s["scoring"] = {k: st.number_input(k, value=float(v), step=0.5, key=f"sc_{k}")
                         for k, v in s["scoring"].items()}
-    with st.expander("Playoffs"):
+        st.caption("Playoffs")
         s["playoff_teams"] = st.number_input("Playoff teams", 2, s["teams"], min(s["playoff_teams"], s["teams"]),
                                              key="po_teams")
         s["playoff_weeks"] = st.number_input("Playoff weeks", 1, 6, s["playoff_weeks"], key="po_weeks")
+        if st.button("Save settings", key="save"):
+            SETTINGS.write_text(json.dumps(s, indent=2))
+            st.success("Saved to settings.json")
     if s["rounds"] > sum(s["slots"].values()):
         st.warning("More rounds than roster spots: extra picks can't be rostered.")
 
@@ -68,23 +75,21 @@ with st.sidebar:
     sim = json.loads(strat_file.read_text()) if strat_file.exists() else None
     strat_names = list(STRATEGIES)
     default = sim["best"] if sim else s.get("strategy", "greedy")
-    s["strategy"] = st.selectbox("Strategy", strat_names,
-                                 index=strat_names.index(default) if default in strat_names else 0, key="strategy")
-    if st.button("Save settings", key="save"):
-        SETTINGS.write_text(json.dumps(s, indent=2))
-        st.success("Saved to settings.json")
-    if st.button("Save settings + run strategy simulation (~4 min)", key="simulate"):
-        SETTINGS.write_text(json.dumps(s, indent=2))  # sim.py reads settings.json
-        with st.spinner("Simulating drafts and seasons..."):
-            r = subprocess.run([sys.executable, str(ROOT / "sim.py"), "--slot", str(s["my_slot"])],
-                               cwd=ROOT, capture_output=True, text=True)
-        if r.returncode:
-            st.error((r.stderr.strip().splitlines() or ["simulation failed"])[-1])
-        else:
-            st.rerun()
-    if sim:
-        st.caption(f"Simulated best strategy for slot {s['my_slot']}: **{sim['best']}**")
-        st.dataframe(pd.DataFrame(sim["table"]).round(3), hide_index=True)
+    with st.expander("Strategy"):
+        s["strategy"] = st.selectbox("Strategy", strat_names,
+                                     index=strat_names.index(default) if default in strat_names else 0, key="strategy")
+        if st.button("Save settings + run strategy simulation (~4 min)", key="simulate"):
+            SETTINGS.write_text(json.dumps(s, indent=2))  # sim.py reads settings.json
+            with st.spinner("Simulating drafts and seasons..."):
+                r = subprocess.run([sys.executable, str(ROOT / "sim.py"), "--slot", str(s["my_slot"])],
+                                   cwd=ROOT, capture_output=True, text=True)
+            if r.returncode:
+                st.error((r.stderr.strip().splitlines() or ["simulation failed"])[-1])
+            else:
+                st.rerun()
+        if sim:
+            st.caption(f"Simulated best strategy for slot {s['my_slot']}: **{sim['best']}**")
+            st.dataframe(pd.DataFrame(sim["table"]).round(3), hide_index=True)
     with st.expander("Reset draft"):
         if st.checkbox("Yes, clear every pick", key="confirm_reset") and st.button("Clear picks", key="reset"):
             st.session_state.picks = []
@@ -110,7 +115,10 @@ n = len(picks)
 taken = {idx.get(p) for p in picks}  # None = unlisted player
 mine = [idx[p] for p, t in zip(picks, order) if t == me and p in idx]
 
-if n < len(order):
+done = n >= len(order)
+if done:
+    st.header("Draft complete")
+else:
     on_clock = order[n]
     rnd, k = divmod(n, s["teams"])
     st.header(f"Round {rnd + 1}, pick {k + 1}: " + ("YOUR PICK" if on_clock == me else f"Team {on_clock + 1} on the clock"))
@@ -118,29 +126,36 @@ if n < len(order):
     choice = st.selectbox("Who was just picked?", [-1] + avail.player_id.tolist(), index=None,
                           placeholder="Start typing a name...", key=f"pick_{n}",
                           format_func=lambda p: UNLISTED if p == -1 else f"{pname[p]} ({pos[p]})")
-    if st.button("Drafted", type="primary", disabled=choice is None, key="drafted"):
-        picks.append(None if choice == -1 else int(choice))
-        save_picks(picks)
-        st.rerun()
+c1, c2 = st.columns(2)
+if not done and c1.button("Drafted", type="primary", disabled=choice is None, key="drafted"):
+    picks.append(None if choice == -1 else int(choice))
+    save_picks(picks)
+    st.rerun()
+if c2.button("Undo last pick", disabled=not picks, key="undo"):
+    picks.pop()
+    save_picks(picks)
+    st.rerun()
+if not done:
     gap = picks_before_next(order, n if on_clock == me else n - 1, me)
     rec = recommend(b, ev, mine, taken, s, s["strategy"], po_mask if s["strategy"] == "playoffs" else None).head(10)
     rec["survive"] = survive(b, list(rec.index), taken, gap, np.random.default_rng(0)).values
     st.subheader("Take now" if on_clock == me else "Best options for your next pick")
-    st.dataframe(rec[["name", "positions", "injury_status", "adp", "fp_pg", "gp", "marginal", "survive", "score"]]
-                 .round(2), hide_index=True)
-    st.caption("marginal = season points the player adds to your daily lineups. "
-               "survive = chance they are still available at your next turn.")
-else:
-    st.header("Draft complete")
-
-if st.button("Undo last pick", disabled=not picks, key="undo"):
-    picks.pop()
-    save_picks(picks)
-    st.rerun()
+    st.dataframe(pd.DataFrame({
+        "Player": rec["name"] + rec.injury_status.map(lambda x: "" if x == "ACTIVE" else f" ({x})"),
+        "Pos": rec.positions.map(short_pos),
+        "Pts/game": rec.fp_pg.round(1),
+        "Games": rec.gp.round(0),
+        "Value": rec.marginal.round(0),
+        "% still there": (rec.survive * 100).round(0),
+    }), hide_index=True)
+    st.caption("Value = season points the player adds to your lineup. "
+               "% still there = chance they are still available at your next pick.")
 
 left, right = st.columns(2)
 left.subheader("My roster")
-left.dataframe(b.loc[mine, ["name", "positions", "injury_status", "fp_pg", "gp"]].round(1), hide_index=True)
+left.dataframe(pd.DataFrame({"Player": b.loc[mine, "name"], "Pos": b.loc[mine, "positions"].map(short_pos),
+                             "Pts/game": b.loc[mine, "fp_pg"].round(1), "Games": b.loc[mine, "gp"].round(0)}),
+               hide_index=True)
 right.subheader("Pick log")
 right.dataframe(pd.DataFrame({
     "pick": list(range(n, 0, -1)),
