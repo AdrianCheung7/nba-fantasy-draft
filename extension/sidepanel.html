@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Draft advisor</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fff; --fg: #1a1a1a; --mute: #666; --line: #ddd; --hi: #dcfce7; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1b1b1b; --fg: #eee; --mute: #999; --line: #3a3a3a; --hi: #14532d; } }
+  body { margin: 0; padding: 12px; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  h1 { font-size: 18px; margin: 0 0 2px; }
+  h2 { font-size: 13px; margin: 16px 0 4px; text-transform: uppercase; color: var(--mute); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 3px 4px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; white-space: normal; }
+  tr.best td { background: var(--hi); font-weight: 600; }
+  .mute { color: var(--mute); }
+  .down { background: #b91c1c; color: #fff; padding: 14px; border-radius: 6px; font-weight: 600; }
+  #ok[hidden], #down[hidden] { display: none; }
+</style>
+<div id="down" class="down" hidden>App not running &mdash; double-click Start Draft App</div>
+<div id="ok" hidden>
+  <h1 id="turn"></h1>
+  <div id="until" class="mute"></div>
+  <div id="note" class="mute"></div>
+  <h2>Top 10</h2>
+  <table><thead><tr><th>Player</th><th>Pos</th><th>Pts/g</th><th>Games</th><th>Value</th><th>% back</th></tr></thead>
+    <tbody id="top"></tbody></table>
+  <h2>My roster</h2>
+  <div id="roster"></div>
+  <h2>Positions still needed</h2>
+  <div id="needs"></div>
+</div>
+<script src="sidepanel.js"></script>

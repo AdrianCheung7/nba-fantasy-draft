@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Fantasy Draft Advisor",
+  "version": "1.0",
+  "description": "Sends ESPN draft picks to the local draft app and highlights its top recommendations.",
+  "permissions": ["sidePanel", "storage"],
+  "host_permissions": ["http://127.0.0.1:8502/*"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_title": "Draft advisor"},
+  "side_panel": {"default_path": "sidepanel.html"},
+  "content_scripts": [{
+    "matches": ["https://fantasy.espn.com/basketball/draft*"],
+    "js": ["parse.js", "content.js"]
+  }]
+}
