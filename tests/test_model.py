@@ -59,7 +59,7 @@ def test_shrunk_rates_pull_toward_league():
 
 from model import build
 
-COLS = ["player_id", "name", "team_id", "positions", "adp", "injury_status", "age", "gp", "cv", *STATS, *RATES]
+COLS = ["player_id", "name", "team_id", "positions", "adp", "espn_rank", "injury_status", "age", "gp", "cv", *STATS, *RATES]
 
 
 def test_build_rookie_fallback_and_injury_scaling():
