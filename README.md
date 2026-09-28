@@ -2,7 +2,7 @@
 
 A local draft-day tool for an ESPN head-to-head points league. It projects every player's 2026-27 season with a regression model built on free ESPN data. It recommends the best pick given your draft slot and every pick made so far. It also simulates thousands of drafts and seasons to choose a draft strategy that beats "everyone drafts optimally".
 
-**Status:** planning complete, implementation not started. See [docs/spec.md](docs/spec.md) and the agent task documents in [docs/agents/](docs/agents/README.md).
+**Status:** fully implemented. See [docs/spec.md](docs/spec.md) for technical design.
 
 ## League defaults (editable in the app)
 
@@ -30,12 +30,13 @@ pip install -r requirements.txt
 python fetch.py            # ~10 min the first time: free ESPN data into data/
 python model.py --backtest # model accuracy vs. "repeat last season"
 python model.py            # writes data/projections.csv
-python sim.py --slot 7     # optional: best strategy for draft slot 7 (a few minutes)
 streamlit run app.py       # opens http://localhost:8501
 pytest                     # tests
 ```
 
-On draft day: pick your team count and slot in the sidebar. After every pick in the real draft, type the player's name and click **Drafted**. The top table shows who to take and the chance each player is still there at your next turn.
+On draft day: pick your team count and slot in the sidebar. After every pick in the real draft, type the player's name and click **Drafted**. The top table shows who to take and the chance each player is still there at your next turn. 
+
+The **Strategy** panel in the sidebar has a "Run strategy simulation" button that tests all draft strategies for your slot with Monte Carlo drafts and seasons (~4 minutes). The results are cached per slot, so you can run it once during prep before the draft begins.
 
 ## Layout
 
