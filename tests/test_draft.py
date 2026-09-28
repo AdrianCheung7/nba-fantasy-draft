@@ -6,8 +6,8 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from draft import (board, day_matrix, ev_matrix, feasible, matched, picks_before_next, snake, starters,
-                   team_value)
+from draft import (board, day_matrix, ev_matrix, feasible, lineup, matched, picks_before_next, slot_fit, snake,
+                   starters, team_value)
 from model import RATES, STATS
 
 LEAGUE = {"slots": {"G": 2, "F": 1, "SG/SF": 1, "PF/C": 1, "UTIL": 1, "BE": 6, "IR": 2}, "rounds": 14,
@@ -51,12 +51,37 @@ def test_day_matrix_free_agent():
     assert ev_matrix(b, G).tolist() == [[20, 20], [0, 0]]
 
 
+def util_fit(n_players, n_util):
+    b = make_board([(1, "UTIL", "ACTIVE", 1)] * n_players, {**LEAGUE, "slots": {"UTIL": n_util}})
+    return slot_fit(b, {"slots": {"UTIL": n_util}})
+
+
 def test_team_value_daily_best_lineup():
     ev = np.array([[10, 0], [5, 5], [1, 8]], float)
-    assert team_value(ev, 1) == 18
-    assert team_value(ev, 2) == 28
-    assert team_value(np.stack([ev, ev]), 1).tolist() == [18, 18]
-    assert team_value(ev[[]], 2) == 0
+    assert team_value(ev, *util_fit(3, 1)) == 18
+    assert team_value(ev, *util_fit(3, 2)) == 28
+    fit, cap = util_fit(3, 1)
+    assert team_value(np.stack([ev, ev]), np.stack([fit, fit]), cap).tolist() == [18, 18]
+    assert team_value(ev[[]], fit[[]], cap) == 0
+
+
+def test_team_value_respects_positions():
+    s = {"slots": {"G": 1, "UTIL": 1, "BE": 3}}
+    b = make_board([(10, "C|PF/C|UTIL", "ACTIVE", 1), (9, "C|PF/C|UTIL", "ACTIVE", 1),
+                    (5, "PG|G|UTIL", "ACTIVE", 1), (8, "PG|G|UTIL", "ACTIVE", 2)], {**LEAGUE, **s})
+    fit, cap = slot_fit(b, s)
+    ev = np.array([[10], [9], [5], [0]], float)  # player 3 is off that day
+    assert team_value(ev, fit, cap) == 15  # two Cs can't both start: C in UTIL + G in G
+    assert lineup(ev, fit, cap)[:, 0].tolist() == [True, False, True, False]
+
+
+def test_team_value_reassigns_slots():
+    s = {"slots": {"G": 1, "UTIL": 1}}
+    b = make_board([(10, "PG|G|UTIL", "ACTIVE", 1), (9, "G", "ACTIVE", 1), (8, "C|UTIL", "ACTIVE", 1)],
+                   {**LEAGUE, **s})
+    fit, cap = slot_fit(b, s)
+    assert team_value(np.array([[10.0], [9.0], [8.0]]), fit, cap) == 19  # G-only takes G, first G moves to UTIL
+    assert team_value(np.array([[10.0], [0.0], [8.0]]), fit, cap) == 18
 
 
 def test_matched_uses_augmenting_paths():
@@ -77,7 +102,9 @@ def test_feasible_starter_coverage():
     assert feasible(b, [0], [1, 2], s) == [2]
 
 
-from draft import STRATEGIES, recommend, survive
+import json
+
+from draft import STRATEGIES, advise, recommend, survive
 
 ROWS = [(30, "C|PF/C|UTIL|BE|IR", "ACTIVE", 1), (20, "G|UTIL|BE|IR", "ACTIVE", 1), (10, "G|UTIL|BE|IR", "ACTIVE", 2)]
 
@@ -128,7 +155,52 @@ def test_every_strategy_scores():
 def test_survive():
     b = make_board([(100, "UTIL", "ACTIVE", 1)] + [(10, "UTIL", "ACTIVE", 1)] * 4)
     rng = np.random.default_rng(0)
-    assert survive(b, [0, 4], set(), 0, rng).tolist() == [1.0, 1.0]
-    p = survive(b, [0, 4], set(), 1, rng)
-    assert p[0] == 0.0 and p[4] > 0.5
-    assert survive(b, [0], set(), None, rng).tolist() == [0.0]
+    assert survive(b, [0, 4], set(), [], {}, LEAGUE, rng).tolist() == [1.0, 1.0]
+    p = survive(b, [0, 4], set(), [1], {}, LEAGUE, rng)
+    assert p[0] < 0.25 and p[4] > 0.5
+    assert survive(b, [0], set(), None, {}, LEAGUE, rng).tolist() == [0.0]
+
+
+def test_survive_follows_espn_rank_over_value():
+    b = make_board([(30, "UTIL", "ACTIVE", 1), (20, "UTIL", "ACTIVE", 1)])  # adp 1, 2 (fallback rank)
+    rng = np.random.default_rng(0)
+    p = survive(b, [0, 1], set(), [0], {}, LEAGUE, rng)
+    assert p[0] < p[1]
+    b["espn_rank"] = [50.0, 1.0]
+    p = survive(b, [0, 1], set(), [0], {}, LEAGUE, rng)
+    assert p[0] > p[1]
+
+
+def test_survive_opponent_skips_players_it_cannot_start():
+    s = {**LEAGUE, "slots": {"G": 1, "PF/C": 1, "BE": 2}}
+    b = make_board([(30, "C|PF/C", "ACTIVE", 1), (29, "PG|G", "ACTIVE", 1), (40, "C|PF/C", "ACTIVE", 1)], s)
+    rng = np.random.default_rng(0)
+    free_c = survive(b, [0], {2}, [0], {}, s, rng)[0]
+    blocked_c = survive(b, [0], {2}, [0], {0: [2]}, s, rng)[0]  # team 0 already starts a C at PF/C
+    assert blocked_c > free_c + 0.2
+
+
+def test_advise():
+    s = {**LEAGUE, "teams": 3, "rounds": 2, "my_slot": 2, "slots": {"UTIL": 1, "BE": 1}}
+    b = make_board(ROWS + [(5, "UTIL|BE|IR", "ACTIVE", 1)] * 3, s)
+    G, _ = day_matrix(b, SCHED)
+    ev = ev_matrix(b, G)
+    a = advise(b, ev, [{"overall": 1, "player": 0}], s)
+    assert (a["on_clock"], a["my_next"]) == (1, 5)  # I'm on the clock; p_back refers to my pick after this
+    top = a["top"]
+    assert list(top.columns) == ["player_id", "name", "pos", "fp_pg", "games", "value", "p_back"]
+    assert top.index[0] == 1 and 0 not in top.index and top.attrs["fallback"] is False
+    assert top.pos.iloc[0] == "G" and top.p_back.between(0, 1).all()
+    assert a["roster"] == [] and a["needs"] == ["UTIL"]
+    json.dumps({**a, "top": top.to_dict("records")})  # server-ready
+
+    picks = [{"overall": 1, "player": 0}, {"overall": 2, "player": None}, {"overall": 3, "player": 1}]
+    a = advise(b, ev, picks, s)
+    assert (a["on_clock"], a["my_next"]) == (2, 5)
+    assert a["roster"][0]["player_id"] is None and a["roster"][0]["name"] == "(player not listed)"
+    assert a["needs"] == ["UTIL"]
+    assert 1 not in a["top"].index
+
+    a = advise(b, ev, [{"overall": i, "player": i - 1} for i in range(1, 7)], s)
+    assert (a["on_clock"], a["my_next"], len(a["top"])) == (None, None, 0)
+    assert [r["player_id"] for r in a["roster"]] == [101, 104]

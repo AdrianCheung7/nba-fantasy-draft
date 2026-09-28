@@ -39,17 +39,29 @@ def test_playoffs_six_teams_with_byes():
         playoffs(list(range(8)), np.ones((8, 2)), [0, 1])
 
 
+def test_playoff_rounds_sum_matchup_periods():
+    weekly = np.array([[5, 0, 4, 5], [3, 3, 0, 3], [0, 0, 0, 0], [0, 6, 1, 1]], float)
+    # 2-period rounds: semis (1v4: 5 < 6, 2v3) on periods 0+1, final (4v2: 2 < 3) on periods 2+3
+    assert playoffs([0, 1, 2, 3], weekly, [0, 1, 2, 3], 2) == 1
+    assert playoffs([0, 1, 2, 3], weekly, [0, 1, 2, 3]) == 0  # 1-period rounds: semis on 2, final on 3
+    with pytest.raises(ValueError):
+        playoffs([0, 1, 2, 3], weekly, [1, 2, 3], 2)
+
+
 def test_validate():
     ok = {"teams": 14, "playoff_teams": 6, "playoff_weeks": 3}
     validate(ok, 14)
-    for bad, slot in [(ok, 15), (ok, 0), ({**ok, "playoff_teams": 9}, 1), ({**ok, "playoff_teams": 15}, 1)]:
+    validate({**ok, "playoff_teams": 4, "playoff_weeks": 4, "playoff_round_periods": 2}, 9)  # the real league
+    real_short = {**ok, "playoff_teams": 4, "playoff_weeks": 3, "playoff_round_periods": 2}
+    for bad, slot in [(ok, 15), (ok, 0), ({**ok, "playoff_teams": 9}, 1), ({**ok, "playoff_teams": 15}, 1),
+                      (real_short, 1)]:
         with pytest.raises(ValueError):
             validate(bad, slot)
 
 
-from draft import board, day_matrix, ev_matrix, starters, team_value
+from draft import board, day_matrix, ev_matrix, slot_fit, starters, team_value
 from model import RATES, STATS
-from sim import adp_pick, sim_draft, sim_season
+from sim import calendar, espn_pick, sim_draft, sim_season
 
 
 def make_board(rows, settings):
@@ -77,35 +89,60 @@ def test_season_matches_team_value():
                     (10, "UTIL|BE", "ACTIVE", 1, 0.0)], s)
     sched = make_schedule()
     G, days = day_matrix(b, sched)
+    fit, cap = slot_fit(b, s)
     week = sched.drop_duplicates("date").set_index("date").week.reindex(days).values
-    weekly = sim_season([[0, 1, 2]], b, G, week - 1, int(week.max()), 2, np.random.default_rng(0))
-    assert weekly.sum() == pytest.approx(team_value(ev_matrix(b, G)[[0, 1, 2]], 2))
+    weekly = sim_season([[0, 1, 2]], b, G, week - 1, int(week.max()), fit, cap, np.random.default_rng(0))
+    assert weekly.sum() == pytest.approx(team_value(ev_matrix(b, G)[[0, 1, 2]], fit[[0, 1, 2]], cap))
+
+
+def test_season_lineup_respects_positions():
+    s = {**TINY, "slots": {"PF/C": 1, "G": 1, "BE": 1}}
+    b = make_board([(30, "C|PF/C", "ACTIVE", 1, 0.0), (20, "C|PF/C", "ACTIVE", 1, 0.0),
+                    (10, "PG|G", "ACTIVE", 1, 0.0)], s)
+    sched = make_schedule(teams=1, weeks=1)
+    G, _ = day_matrix(b, sched)
+    weekly = sim_season([[0, 1, 2]], b, G, np.zeros(G.shape[1], int), 1, *slot_fit(b, s), np.random.default_rng(0))
+    assert weekly[0, 0] == 40 * G[0].sum()  # the second C sits
+
+
+def test_calendar_weeks_and_matchups():
+    days = np.array(["2026-10-20", "2026-10-27", "2026-11-03", "2026-11-10", "2026-11-17"])
+    sched = pd.DataFrame({"team_id": 1, "date": days, "week": [1, 2, 3, 4, 5]})
+    s = {"playoff_weeks": 2}
+    period, n_reg, po = calendar(days, sched, s)
+    assert period.tolist() == [0, 1, 2, 3, 4] and (n_reg, po) == (3, [3, 4])
+    m = pd.DataFrame({"date": days[1:], "matchup": [1, 1, 2, 3], "playoff": [False, False, False, True]})
+    period, n_reg, po = calendar(days, sched, s, m)
+    assert period.tolist() == [-1, 0, 0, 1, 2] and (n_reg, po) == (2, [2])
 
 
 def test_sim_draft_unique_full_rosters():
     b = make_board([(40 - 3 * i, "UTIL|BE", "ACTIVE", 1 + i % 4, 0.3) for i in range(10)], TINY)
     G, _ = day_matrix(b, make_schedule())
     ev = ev_matrix(b, G)
-    for opp in ("greedy", "adp"):
+    for opp in ("greedy", "espn"):
         rosters = sim_draft(b, ev, TINY, 0, "greedy", opp, None, np.random.default_rng(1))
         picks = [p for r in rosters for p in r]
         assert [len(r) for r in rosters] == [2, 2, 2] and len(set(picks)) == 6
         assert rosters[0][0] == 0  # I pick first, greedy, no noise on my own picks
 
 
-def test_adp_pick_unranked_after_ranked_then_by_value():
+def test_espn_pick_unranked_after_ranked_then_by_value():
     # ESPN gives every undrafted player adp ~140: rank them after real ADPs, best season_fp first
     b = make_board([(5, "UTIL|BE", "ACTIVE", 1, 0.3), (10, "UTIL|BE", "ACTIVE", 1, 0.3),
                     (30, "UTIL|BE", "ACTIVE", 1, 0.3)], TINY)
     b["adp"] = [130.0, 140.0, 140.0]
     for seed in range(20):
         rng = np.random.default_rng(seed)
-        assert adp_pick(b, [], set(), TINY, rng) == 0
-        assert adp_pick(b, [], {0}, TINY, rng) == 2
+        assert espn_pick(b, [], set(), TINY, rng) == 0
+        assert espn_pick(b, [], {0}, TINY, rng) == 2
+    b["espn_rank"] = [999.0, 2.0, 999.0]  # espn_rank wins over adp; 999 = unranked
+    assert espn_pick(b, [], set(), TINY, np.random.default_rng(0)) == 1
+    assert espn_pick(b, [], {1}, TINY, np.random.default_rng(0)) == 2
 
 
 from draft import STRATEGIES
-from sim import best, run
+from sim import best, report, report_from_rosters, run
 
 
 def test_run_smoke():
@@ -117,6 +154,24 @@ def test_run_smoke():
     assert df[["p_champion", "p_playoffs", "p_bottom3"]].stack().between(0, 1).all()
     assert "obj_se" in df.columns and (df.obj_se >= 0).all()
     assert best(df) in STRATEGIES
+
+
+def test_report_smoke():
+    s = {**TINY, "teams": 4}
+    b = make_board([(40 - 3 * i, "UTIL|BE", "ACTIVE", 1 + i % 4, 0.3) for i in range(12)], s)
+    df = report(s, 2, n_drafts=2, n_seasons=3, b=b, schedule=make_schedule())
+    assert df.team.tolist() == [1, 2, 3, 4] and df.us.tolist() == [False, True, False, False]
+    assert df.p_champion.sum() == pytest.approx(1) and df.p_playoffs.sum() == pytest.approx(2)
+    assert (df.avg_points > 0).all() and df.avg_wins.sum() == pytest.approx(6)  # 3 reg weeks x 2 games
+
+
+def test_report_from_rosters_stronger_team_wins_more():
+    s = {**TINY, "teams": 2, "my_slot": 1}
+    b = make_board([(40, "UTIL|BE", "ACTIVE", 1, 0.1), (30, "UTIL|BE", "ACTIVE", 2, 0.1),
+                    (5, "UTIL|BE", "ACTIVE", 1, 0.1), (4, "UTIL|BE", "ACTIVE", 2, 0.1)], s)
+    df = report_from_rosters([[0, 1], [2, 3]], b, s, n_seasons=10, schedule=make_schedule())
+    assert df.us.tolist() == [True, False] and df.p_champion.tolist() == [1.0, 0.0]
+    assert df.avg_wins.iloc[0] == 3
 
 
 def test_best_keeps_greedy_when_gap_within_noise():

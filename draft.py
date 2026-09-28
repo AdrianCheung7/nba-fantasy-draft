@@ -44,15 +44,47 @@ def ev_matrix(b, G):
     return (b.fp_pg * b.avail).values[:, None] * G
 
 
-def team_value(ev, n_start):
-    """Season total of daily best-n lineups. ev: (..., players, days)."""
-    # ponytail: lineup from expected values ignores position eligibility per day (spec A3)
-    top = -np.sort(-ev, axis=-2)[..., :n_start, :]
-    return np.maximum(top, 0).sum(axis=(-2, -1))
+def slot_fit(b, settings):
+    """The starter slots as Hall's condition: a set of players can fill them iff, for every set Q of slot names,
+    the players eligible only for slots in Q number <= the slots in Q. fit[p, q] = player p counts toward Q q."""
+    slots = starters(settings)
+    names = sorted(set(slots))
+    bits = np.array([sum(1 << i for i, n in enumerate(names) if n in pos) for pos in b.pos], dtype=np.int64)
+    # ponytail: 2^(slot names) conditions; fine for the handful of starter slot names leagues use
+    qs = np.arange(1 << len(names))
+    fit = (bits[:, None] & ~qs) == 0
+    cap = np.array([sum(slots.count(n) for i, n in enumerate(names) if q >> i & 1) for q in qs])
+    keep = np.flatnonzero(fit.any(axis=0))  # a Q nobody fits inside can't bind
+    keep = keep[np.argsort(cap[keep], kind="stable")]
+    _, first = np.unique(fit[:, keep], axis=1, return_index=True)  # same players: keep the tightest cap
+    keep = keep[first]
+    return fit[:, keep].astype(np.int8), cap[keep]
 
 
-def matched(pos_sets, slots):
-    """Max starter slots fillable by these players (bipartite matching, augmenting paths)."""
+def lineup(ev, fit, cap):
+    """Daily starters (bool, shaped like ev: (..., players, days)): each day add players best-first while the
+    set still fits the starter slots. A player's value doesn't depend on his slot, so the sets that fit form a
+    transversal matroid and this greedy is optimal. fit: (..., players, conditions) from slot_fit."""
+    order = np.argsort(-ev, axis=-2)
+    plays = np.take_along_axis(ev, order, axis=-2) > 0
+    start = np.zeros(ev.shape, bool)
+    used = np.zeros(ev.shape[:-2] + (ev.shape[-1], len(cap)), np.int16)
+    for k in range(ev.shape[-2]):
+        i = order[..., k:k + 1, :]
+        f = np.take_along_axis(fit, np.swapaxes(i, -1, -2), axis=-2)  # (..., days, conditions)
+        ok = plays[..., k, :] & (used + f <= cap).all(axis=-1)
+        used += f * ok[..., None]
+        np.put_along_axis(start, i, ok[..., None, :], axis=-2)
+    return start
+
+
+def team_value(ev, fit, cap):
+    """Season total of daily best legal lineups. ev: (..., players, days)."""
+    return (ev * lineup(ev, fit, cap)).sum(axis=(-2, -1))
+
+
+def match(pos_sets, slots):
+    """Player filling each starter slot (-1 = open); bipartite matching by augmenting paths."""
     owner = [-1] * len(slots)
 
     def augment(p, seen):
@@ -64,7 +96,14 @@ def matched(pos_sets, slots):
                     return True
         return False
 
-    return sum(augment(p, set()) for p in range(len(pos_sets)))
+    for p in range(len(pos_sets)):
+        augment(p, set())
+    return owner
+
+
+def matched(pos_sets, slots):
+    """Max starter slots fillable by these players."""
+    return sum(o >= 0 for o in match(pos_sets, slots))
 
 
 def feasible(b, mine, cand, settings):
@@ -73,13 +112,18 @@ def feasible(b, mine, cand, settings):
     ir = settings["slots"].get("IR", 0)
     healthy_cap = sum(settings["slots"].values()) - ir
     picks_left = settings["rounds"] - len(mine) - 1
-    mine_ir = int(b.ir_ok.values[mine].sum())
+    ir_ok, pos, pats = b.ir_ok.values, b.pos.values, b.positions.values
+    mine_ir = int(ir_ok[mine].sum())
+    covers = {}  # starter coverage depends only on the candidate's positions
     out = []
     for c in cand:
-        if len(mine) + 1 - min(ir, mine_ir + int(b.ir_ok.iat[c])) > healthy_cap:
+        if len(mine) + 1 - min(ir, mine_ir + int(ir_ok[c])) > healthy_cap:
             continue
-        if len(slots) > picks_left and len(slots) - matched([b.pos.iat[i] for i in mine + [c]], slots) > picks_left:
-            continue
+        if len(slots) > picks_left:
+            if pats[c] not in covers:
+                covers[pats[c]] = len(slots) - matched([pos[i] for i in mine] + [pos[c]], slots) <= picks_left
+            if not covers[pats[c]]:
+                continue
         out.append(c)
     return out
 
@@ -98,24 +142,19 @@ STRATEGIES = {
 
 def recommend(b, ev, mine, taken, settings, strategy="greedy", po_mask=None, k=TOP_K):
     mine = list(mine)
-    n_start = len(starters(settings))
+    fit, cap = slot_fit(b, settings)
     free = b[~b.index.isin(list(taken) + mine)].sort_values("season_fp", ascending=False).index
-    cand = []
-    for c in free:  # best-first until k legal players
-        if feasible(b, mine, [c], settings):
-            cand.append(c)
-            if len(cand) == k:
-                break
+    cand = feasible(b, mine, list(free), settings)[:k]  # best k legal players
     fallback = not cand  # M7: nothing legal (e.g. no IR-eligible left): best available, flagged for the UI
     cand = cand or list(free[:k])
     out = b.loc[cand].copy()
     rosters = [mine + [c] for c in cand]
-    out["marginal"] = team_value(ev[rosters], n_start) - team_value(ev[mine], n_start)
+    out["marginal"] = team_value(ev[rosters], fit[rosters], cap) - team_value(ev[mine], fit[mine], cap)
     if po_mask is None:
         out["marginal_po"] = 0.0
     else:
         evp = ev[:, po_mask]
-        out["marginal_po"] = team_value(evp[rosters], n_start) - team_value(evp[mine], n_start)
+        out["marginal_po"] = team_value(evp[rosters], fit[rosters], cap) - team_value(evp[mine], fit[mine], cap)
     ctx = {"ir_open": settings["slots"].get("IR", 0) > int(b.ir_ok.values[mine].sum())}
     out["score"] = STRATEGIES[strategy](out, ctx)
     out = out.sort_values("score", ascending=False)
@@ -123,13 +162,104 @@ def recommend(b, ev, mine, taken, settings, strategy="greedy", po_mask=None, k=T
     return out
 
 
-def survive(b, cand, taken, n_picks, rng, sims=200):
-    """P(candidate still on the board at my next pick); opponents take by noisy season value."""
-    if n_picks is None:
+ADP_UNRANKED = 139  # ESPN's default adp (~140) for players nobody drafts
+RANK_UNRANKED = 999  # fetch.py's espn_rank for players ESPN doesn't rank
+
+
+def espn_rank(b):
+    """Position on ESPN's draft list (espn_rank, else adp); unranked = inf."""
+    if "espn_rank" in b:
+        return b.espn_rank.where(b.espn_rank < RANK_UNRANKED, np.inf)
+    return b.adp.where(b.adp < ADP_UNRANKED, np.inf)
+
+
+# D2 opponent model: each opponent takes the lowest noisy blend of ESPN list position and our value position.
+# Calibrated 2026-09-28: all 14 teams draft with the model (12 rounds, 150 sims); mean pick vs ESPN ADP over the
+# 109 players with ADP < 120. MAE in picks: weight 1.0/noise 0.4 -> 5.1, 0.95/0.4 -> 5.9, 0.9/0.35 -> 7.8,
+# 0.7/0.45 -> 14.5, 0.5/0.45 -> 20.0 (espn_rank alone: 8.3). MISFIT 1.0-3.0 moved MAE < 0.01: eligibility is
+# broad, so it rarely binds. Re-run if ADP drifts from ESPN's list during draft season.
+RANK_WEIGHT = 0.95  # ADP says ESPN's list (autopick + queues) dominates; keep a little value for sharper owners
+PICK_NOISE = 0.4  # lognormal sigma on the blend: humans reach/slide ~40% of a player's list position
+MISFIT = 2.0  # blend multiplier for a player the team couldn't start in an open starter slot (needs-based drafting)
+
+
+def survive(b, cand, taken, upcoming, rosters, settings, rng, sims=200):
+    """P(candidate still on the board at my next pick). upcoming: teams picking before it, in order (None = I have
+    no next pick); rosters: team -> its board indices."""
+    if upcoming is None:
         return pd.Series(0.0, index=cand)
     free = b[~b.index.isin(list(taken))]
-    pool = free.nlargest(len(cand) + 3 * n_picks + 10, "season_fp")
-    noisy = pool.season_fp.values * rng.lognormal(0, 0.15, (sims, len(pool)))
-    hit = np.zeros(noisy.shape, bool)
-    np.put_along_axis(hit, np.argsort(-noisy, axis=1)[:, :n_picks], True, axis=1)
-    return pd.Series(1 - hit.mean(axis=0), index=pool.index).reindex(cand).fillna(1.0)
+    rank_pos = np.lexsort((-free.season_fp.values, espn_rank(free).values)).argsort() + 1
+    key = RANK_WEIGHT * rank_pos + (1 - RANK_WEIGHT) * free.season_fp.rank(ascending=False, method="first").values
+    top = np.argsort(key)[:len(cand) + 3 * len(upcoming) + 10]
+    pool, key, pats = free.index[top], key[top], free.positions.values[top]
+    slots = starters(settings)
+    cache = {}
+
+    def fits(roster):  # sorted positions strings -> which pool players would fill an open starter slot
+        if roster not in cache:
+            sets = [set(p.split("|")) for p in roster]
+            base = matched(sets, slots)
+            ok = {p: base == len(slots) or matched(sets + [set(p.split("|"))], slots) > base for p in set(pats)}
+            cache[roster] = np.array([ok[p] for p in pats])
+        return cache[roster]
+
+    base = {t: b.positions.values[rosters.get(t, [])].tolist() for t in upcoming}
+    noisy = key * rng.lognormal(0, PICK_NOISE, (sims, len(pool)))
+    gone = np.zeros(noisy.shape, bool)
+    for s in range(sims):
+        got = {t: [] for t in upcoming}
+        for t in upcoming:
+            score = noisy[s] * np.where(fits(tuple(sorted(base[t] + got[t]))), 1.0, MISFIT)
+            j = np.where(gone[s], np.inf, score).argmin()
+            gone[s, j] = True
+            got[t].append(pats[j])
+    return pd.Series(1 - gone.mean(axis=0), index=pool).reindex(cand).fillna(1.0)
+
+
+def short_pos(p):
+    return ", ".join(x for x in p.split("|") if x not in ("BE", "IR", "UTIL"))
+
+
+UNLISTED = "(player not listed)"
+TOP_COLS = ["player_id", "name", "pos", "fp_pg", "games", "value", "p_back"]
+
+
+def advise(b, ev, picks, settings, strategy="greedy", po_mask=None):
+    """Single entry point for the draft UIs. picks: [{"overall": 1-based pick, "player": board index or None
+    (unlisted)}]. Teams are 0-based snake indices (my_slot - 1 = me). my_next (1-based) is the pick p_back
+    refers to: my pick after this one when I'm on the clock. Plain types plus one DataFrame (index = board
+    index), so a server can JSON it."""
+    order = snake(settings["teams"], settings["rounds"])
+    me = settings["my_slot"] - 1
+    picks = [p for p in picks if p["overall"] <= len(order)]  # e.g. rounds lowered mid-draft
+    rosters, u = {}, 0
+    for p in picks:
+        t = order[p["overall"] - 1]
+        if p["player"] is not None:
+            rosters.setdefault(t, []).append(p["player"])
+        u += p["player"] is None and t == me  # my unlisted picks still use a round and a bench spot
+    mine = rosters.get(me, [])
+    taken = {p["player"] for p in picks if p["player"] is not None}
+    roster = [{"player_id": int(b.at[i, "player_id"]), "name": b.at[i, "name"], "pos": short_pos(b.at[i, "positions"]),
+               "fp_pg": float(b.at[i, "fp_pg"]), "games": float(b.at[i, "gp"])} for i in mine]
+    roster += [{**dict.fromkeys(["player_id", "pos", "fp_pg", "games"]), "name": UNLISTED} for _ in range(u)]
+    slots = starters(settings)
+    needs = [s for s, o in zip(slots, match([b.pos.iat[i] for i in mine], slots)) if o < 0]
+    n = max((p["overall"] for p in picks), default=0)  # 0-based index of the pick on the clock
+    if n >= len(order):
+        top = pd.DataFrame(columns=TOP_COLS)
+        top.attrs["fallback"] = False
+        return {"on_clock": None, "my_next": None, "top": top, "roster": roster, "needs": needs}
+    start = n + (order[n] == me)
+    nxt = next((j for j in range(start, len(order)) if order[j] == me), None)
+    rs = settings if not u else {**settings, "rounds": settings["rounds"] - u,
+                                 "slots": {**settings["slots"], "BE": max(0, settings["slots"].get("BE", 0) - u)}}
+    rec = recommend(b, ev, mine, taken, rs, strategy, po_mask).head(10)
+    p_back = survive(b, list(rec.index), taken, None if nxt is None else order[start:nxt], rosters, settings,
+                     np.random.default_rng(0))
+    top = pd.DataFrame({"player_id": rec.player_id, "name": rec["name"], "pos": rec.positions.map(short_pos),
+                        "fp_pg": rec.fp_pg, "games": rec.gp, "value": rec.marginal, "p_back": p_back.values})
+    top.attrs["fallback"] = bool(rec.attrs["fallback"])
+    return {"on_clock": order[n], "my_next": None if nxt is None else nxt + 1, "top": top, "roster": roster,
+            "needs": needs}

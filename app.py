@@ -9,9 +9,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from draft import STRATEGIES, board, day_matrix, ev_matrix, picks_before_next, recommend, snake, starters, survive
+from draft import STRATEGIES, advise, board, day_matrix, ev_matrix, snake, starters
 from fetch import SLOT_NAMES
-from sim import validate
+from sim import calendar, validate
 
 ROOT = Path(__file__).parent
 # DRAFT_HOME lets tests point settings/picks/data at a tmp dir instead of the real repo (M8); sim.py's
@@ -42,10 +42,6 @@ def save_picks(picks):
     tmp = DRAFT.with_suffix(".tmp")  # write-then-rename: a crash never corrupts the pick log
     tmp.write_text(json.dumps(picks))
     tmp.replace(DRAFT)
-
-
-def short_pos(p):
-    return ", ".join(x for x in p.split("|") if x not in ("BE", "IR", "UTIL"))
 
 
 missing = [f for f in ("projections.csv", "schedule.csv") if not (DATA / f).exists()]
@@ -130,8 +126,8 @@ b = board(load_csv("projections.csv"), s)
 sched = load_csv("schedule.csv")
 G, days = day_matrix(b, sched)
 ev = ev_matrix(b, G)
-week = sched.drop_duplicates("date").set_index("date").week.reindex(days).values
-po_mask = week > week.max() - s["playoff_weeks"]
+period, _, po = calendar(days, sched, s, load_csv("matchups.csv") if (DATA / "matchups.csv").exists() else None)
+po_mask = np.isin(period, po)
 
 if "picks" not in st.session_state:
     st.session_state.picks = load_picks()
@@ -143,12 +139,9 @@ order = snake(s["teams"], s["rounds"])
 me = s["my_slot"] - 1
 n = len(picks)
 taken = {idx.get(p) for p in picks}  # None = unlisted player
-mine = [idx[p] for p, t in zip(picks, order) if t == me and p in idx]
-u = sum(1 for p, t in zip(picks, order) if t == me and p not in idx)  # F4: my "not listed"/unknown picks
-# feasibility must count those u picks as spent rounds and a filled bench spot, or it thinks I have
-# more picks and roster room left than I actually do (engine itself is unchanged, per the ruling)
-rec_settings = s if not u else {**s, "rounds": s["rounds"] - u,
-                                "slots": {**s["slots"], "BE": max(0, s["slots"].get("BE", 0) - u)}}
+# advise counts my "not listed"/unknown picks (F4) as spent rounds and bench spots
+adv = advise(b, ev, [{"overall": i + 1, "player": idx.get(p)} for i, p in enumerate(picks)], s,
+             s["strategy"], po_mask if s["strategy"] == "playoffs" else None)
 
 done = n >= len(order)
 if done:
@@ -171,35 +164,28 @@ if c2.button("Undo last pick", disabled=not picks, key="undo"):
     save_picks(picks)
     st.rerun()
 if not done:
-    gap = picks_before_next(order, n if on_clock == me else n - 1, me)
-    full_rec = recommend(b, ev, mine, taken, rec_settings, s["strategy"],
-                         po_mask if s["strategy"] == "playoffs" else None)
-    fallback = bool(full_rec.attrs.get("fallback"))
-    rec = full_rec.head(10)
-    rec["survive"] = survive(b, list(rec.index), taken, gap, np.random.default_rng(0)).values
+    rec = adv["top"]
     st.subheader("Take now" if on_clock == me else "Best options for your next pick")
     st.dataframe(pd.DataFrame({
-        "Player": rec["name"] + rec.injury_status.map(lambda x: "" if x == "ACTIVE" else f" ({x})"),
-        "Pos": rec.positions.map(short_pos),
+        "Player": rec["name"] + b.loc[rec.index, "injury_status"].map(lambda x: "" if x == "ACTIVE" else f" ({x})"),
+        "Pos": rec.pos,
         "Pts/game": rec.fp_pg.round(1),
-        "Games": rec.gp.round(0),
-        "Value": rec.marginal.round(0),
-        "% still there": (rec.survive * 100).round(0),
+        "Games": rec.games.round(0),
+        "Value": rec.value.round(0),
+        "% still there": (rec.p_back * 100).round(0),
     }), hide_index=True)
     st.caption("Value = season points the player adds to your lineup. "
                "% still there = chance they are still available at your next pick.")
-    if fallback:  # M7
+    if rec.attrs["fallback"]:  # M7
         st.caption("No fully legal pick left - showing best available.")
 
 left, right = st.columns(2)
 left.subheader("My roster")
-roster = pd.DataFrame({"Player": b.loc[mine, "name"], "Pos": b.loc[mine, "positions"].map(short_pos),
-                       "Pts/game": b.loc[mine, "fp_pg"].round(1), "Games": b.loc[mine, "gp"].round(0)})
-if u:  # F4: one row per "not listed"/unknown pick, so the roster reflects every pick I've made
-    roster = pd.concat([roster, pd.DataFrame({"Player": [UNLISTED] * u, "Pos": [""] * u,
-                                              "Pts/game": [np.nan] * u, "Games": [np.nan] * u})],
-                       ignore_index=True)
-left.dataframe(roster, hide_index=True)
+roster = pd.DataFrame(adv["roster"], columns=["name", "pos", "fp_pg", "games"]).astype({"fp_pg": float, "games": float})
+left.dataframe(roster.round({"fp_pg": 1, "games": 0}).rename(
+    columns={"name": "Player", "pos": "Pos", "fp_pg": "Pts/game", "games": "Games"}), hide_index=True)
+if adv["needs"]:
+    left.caption("Still needed: " + ", ".join(adv["needs"]))
 right.subheader("Pick log")
 right.dataframe(pd.DataFrame({
     "pick": list(range(n, 0, -1)),
