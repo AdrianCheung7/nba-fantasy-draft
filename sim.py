@@ -13,7 +13,10 @@ from draft import STRATEGIES, board, day_matrix, ev_matrix, feasible, recommend,
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
-NOISE = 0.1  # ponytail: opponent pick noise (lognormal sigma); 0 = clones of the greedy recommender
+# ponytail: opponent pick noise (lognormal sigma); 0 = clones of the greedy recommender. Calibrated so
+# greedy-vs-greedy slot 7 (14 teams, 20x20) p_playoffs lands in 6/14 +/- 0.10: 0.1 -> 0.755, 0.03 -> 0.342,
+# 0.02 -> 0.285, 0.01 -> 0.188. Re-calibrate if league size or projections change a lot.
+NOISE = 0.03
 OPPONENTS = ("greedy", "adp")
 ADP_UNRANKED = 139  # ESPN's default adp (~140) for players nobody drafts
 
