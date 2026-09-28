@@ -80,7 +80,7 @@ def shrunk_rates(games, target, k=SHRINK_K):
 
 
 INJURY_GP = {"OUT": 0.75, "INJURY_RESERVE": 0.5, "SUSPENSION": 0.9}  # ponytail: calibration knob
-OUT_COLS = ["player_id", "name", "team_id", "positions", "adp", "injury_status", "age", "gp", "cv", *STATS, *RATES]
+OUT_COLS = ["player_id", "name", "team_id", "positions", "adp", "espn_rank", "injury_status", "age", "gp", "cv", *STATS, *RATES]
 
 
 def fp_cv(games, scoring, target):
@@ -111,6 +111,8 @@ def build(games, players, espn_proj, ages, settings):
     proj = proj.merge(cv, on="player_id", how="left")
     proj["cv"] = proj.cv.fillna(cv.cv.median())
     out = players.merge(proj, on="player_id")
+    if "espn_rank" not in out:  # players.csv from before fetch.py added the column
+        out["espn_rank"] = 999
     out["gp"] = out.gp * out.injury_status.map(INJURY_GP).fillna(1.0)
     return out[OUT_COLS]
 
