@@ -87,8 +87,10 @@ def test_post_maps_persists_and_responds(api, home):
     assert [p["overall"] for p in calls[-1]] == [1, 2, 3, 4, 5, 6, 7]
     saved = json.loads((home / "data" / "draft.json").read_text())
     assert saved == [3112335, 3032977, 4432166, None, None, 5217746, 2]
-    assert call("/picks", {"picks": picks})[0] == r  # idempotent
-    assert call("/state")[0] == r
+    again = call("/picks", {"picks": picks})[0]
+    assert {**again, "synced_at": 0} == {**r, "synced_at": 0}  # idempotent
+    assert r["rounds"] == 12 and again["synced_at"] >= r["synced_at"] > 0  # footer: n/(teams*rounds), "synced Ns ago"
+    assert call("/state")[0] == again
 
 
 def test_cors_preflight(api):

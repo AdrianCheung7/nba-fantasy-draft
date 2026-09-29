@@ -94,7 +94,9 @@ class App:
     def post(self, body):
         with self.lock:
             self.load()
-            return self.compute(body)
+            r = self.compute(body)
+            r["synced_at"] = self.last["synced_at"] = time.time()  # not in compute(): a replay is not a sync
+            return r
 
     def compute(self, body):
         s, teams = self.s, self.s["teams"]
@@ -131,7 +133,7 @@ class App:
         top = r["top"]
         out = {**r, "top": json.loads(top.to_json(orient="records")), "fallback": bool(top.attrs.get("fallback")),
                "mapped": len(body["picks"]) - len(unmatched), "unmatched": unmatched, "n_picks": n,
-               "teams": teams, "me": slot - 1, "slot": slot}
+               "teams": teams, "rounds": s["rounds"], "me": slot - 1, "slot": slot}
         if self.reset_at:
             out["reset_at"] = self.reset_at
         if slot != s["my_slot"]:
