@@ -136,6 +136,23 @@ def test_new_draft_resets_when_pick_one_differs(api, home):
     assert json.loads((home / "data" / "draft.json").read_text()) == [4432166]
 
 
+def test_new_draft_resets_when_league_changes_even_if_pick_one_same(api, home):
+    # practice drafts: SGA/Jokic go 1-2 every time, but each practice draft has its own leagueId
+    call, calls = api
+    old = [pick(1, "Nikola Jokic", 3112335), pick(2, "Giannis Antetokounmpo", 3032977), pick(3, "Cade Cunningham", 4432166)]
+    call("/picks", {"picks": old, "url": "https://fantasy.espn.com/basketball/draft?leagueId=111&teamId=13"})
+    call("/picks", {"picks": old[:1], "url": "https://fantasy.espn.com/basketball/draft?leagueId=222&teamId=13"})
+    assert players(calls) == [0]
+
+
+def test_new_draft_resets_when_a_known_player_reappears_elsewhere(api):
+    call, calls = api
+    call("/picks", {"picks": [pick(1, "Nikola Jokic", 3112335), pick(2, "Giannis Antetokounmpo", 3032977)]})
+    call("/picks", {"picks": [pick(1, "Nikola Jokic", 3112335), pick(2, "Cade Cunningham", 4432166),
+                              pick(3, "Giannis Antetokounmpo", 3032977)]})
+    assert players(calls) == [0, 2, 1]
+
+
 def test_pick_number_beyond_team_count_is_overall(api):
     call, calls = api
     p = pick(17, "Yang Hansen", 5217746)

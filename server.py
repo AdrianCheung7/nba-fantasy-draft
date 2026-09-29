@@ -39,6 +39,7 @@ class App:
         self.mtime = None
         self.last = {"status": "no picks yet"}
         self.slot = None  # my slot as read off the Picks panel (my team's pick), else settings
+        self.last_url = None  # draft page of the stored picks (set by the replay of last_picks.json)
 
     def load(self):
         """Board + expected-value matrix; rebuilt only when settings.json changes."""
@@ -106,8 +107,15 @@ class App:
                 r, k = divmod(o - 1, teams)  # snake: odd rounds go 1..N, even rounds N..1
                 mine = k + 1 if r % 2 == 0 else teams - k
         known = self.known()
-        if known.get(1) is not None and 1 in new and new[1] != known[1]:  # pick 1 changed: a new draft
+        # a new draft if: another draft page (practice drafts each get their own leagueId), pick 1 changed,
+        # or a known player shows up at a different pick (SGA/Jokic go 1-2 in every practice draft)
+        league = re.search(r"leagueId=(\d+)", body.get("url") or "")
+        old = re.search(r"leagueId=(\d+)", self.last_url or "")
+        if (league and old and league[1] != old[1]) \
+                or (known.get(1) is not None and 1 in new and new[1] != known[1]) \
+                or any(v is not None and known.get(o) != v and v in known.values() for o, v in new.items()):
             known, self.slot = {}, None
+        self.last_url = body.get("url") or self.last_url
         merged = {**known, **{o: v for o, v in new.items() if v is not None or o not in known}}  # never forget a pick
         self.slot = mine or self.slot
         slot = self.slot or s["my_slot"]
