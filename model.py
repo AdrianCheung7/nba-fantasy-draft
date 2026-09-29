@@ -16,6 +16,7 @@ RATES = ["EJ", "FF", "TF", "TD", "QD", "TW"]  # rare or team-driven: shrunk rate
 FEATURES = [f"{c}_{k}" for c in STATS + ["GP"] for k in (1, 2, 3)] + ["age"]
 SHRINK_K = 40  # ponytail: prior strength in weighted games; tune if rates look too flat/noisy
 MIN_GP_TRAIN = 10  # seasons shorter than this are too noisy to be stat targets
+OREB_SHARE = 0.27  # ponytail: league OREB/REB, for ESPN players with no prior-season line
 
 
 def points(df, scoring):
@@ -71,6 +72,57 @@ def predict(stat_m, gp_m, tab, ages, target, season):
     return out
 
 
+def fpg(d, scoring):
+    """Fantasy points per game of a per-game stat frame, indexed by player_id (rare-event rates ignored)."""
+    return pd.Series(points(d.assign(**{c: 0.0 for c in RATES}), scoring).values, index=d.player_id.values)
+
+
+def model_pred(tab, ages, test, season):
+    """The regression's projection of season `test`, trained only on seasons before it."""
+    seasons = set(tab.season)
+    stat_m, gp_m = fit(tab, ages, [s for s in range(test - 3, test) if s - 1 in seasons], season)
+    return predict(stat_m, gp_m, tab, ages, test, season)
+
+
+def espn_split(e, tab, prev):
+    """ESPN projects total rebounds only: split REB into OREB/DREB by the player's `prev`-season OREB share."""
+    p = tab[tab.season == prev].set_index("player_id")
+    share = (p.OREB / (p.OREB + p.DREB)).reindex(e.player_id).fillna(OREB_SHARE).values
+    return e.assign(OREB=e.REB * share, DREB=e.REB * (1 - share))
+
+
+def blend_espn(proj, e, w):
+    """Per-game STATS = w * model + (1 - w) * ESPN where ESPN has the player; gp stays the model's."""
+    x = e.set_index("player_id")[STATS].reindex(proj.player_id).values
+    out = proj.copy()
+    out[STATS] = np.where(np.isnan(x), proj[STATS].values, w * proj[STATS].values + (1 - w) * np.nan_to_num(x))
+    return out
+
+
+def score(pred, tab, test, scoring, top=150):
+    """FP/g MAE of a projection vs the season's actuals (players with 20+ games): all, and the `top` by projected
+    season FP."""
+    actual = tab[(tab.season == test) & (tab.GP >= 20)]
+    d = pd.concat({"a": fpg(actual, scoring), "p": fpg(pred, scoring)}, axis=1, join="inner")
+    d["val"] = d.p * pred.set_index("player_id").gp.reindex(d.index)
+    e = (d.p - d.a).abs()
+    return {"n": len(d), "mae": e.mean(), "mae_top": e[d.val.nlargest(top).index].mean()}
+
+
+def pick_weight(tab, ages, hist, scoring, season):
+    """Model weight w in {0, .1 .. 1} with the lowest FP/g MAE for w * model + (1 - w) * ESPN over the past seasons
+    that have an ESPN preseason projection in `hist` ({season: frame}); 0.5 when fewer than 2 seasons."""
+    ts = [t for t in hist if t - 2 in set(tab.season)]  # need a season to train on and one before it for lags
+    if len(ts) < 2:
+        return 0.5
+    ws = np.arange(11) / 10
+    err = np.zeros(11)
+    for t in ts:
+        pred, e = model_pred(tab, ages, t, season), espn_split(hist[t], tab, t - 1)
+        err += [score(blend_espn(pred, e, w), tab, t, scoring)["mae"] for w in ws]
+    return ws[err.argmin()]
+
+
 def shrunk_rates(games, target, k=SHRINK_K):
     w = games.season.map({target - 1: 3, target - 2: 2, target - 3: 1}).fillna(0)
     league = games.loc[w > 0, RATES].mean()
@@ -91,12 +143,14 @@ def fp_cv(games, scoring, target):
     return cv.fillna(cv.median()).rename("cv").reset_index()
 
 
-def build(games, players, espn_proj, ages, settings):
+def build(games, players, espn_proj, ages, settings, espn_hist=None):
     season = settings["season"]
     tab = season_table(games)
     seasons = set(tab.season)
     stat_m, gp_m = fit(tab, ages, [s for s in settings["history_seasons"] if s - 1 in seasons], season)
-    proj = predict(stat_m, gp_m, tab, ages, season, season)
+    espn_proj = espn_split(espn_proj, tab, season - 1)
+    w = pick_weight(tab, ages, espn_hist or {}, settings["scoring"], season)
+    proj = blend_espn(predict(stat_m, gp_m, tab, ages, season, season), espn_proj, w)
     rookies = espn_proj[~espn_proj.player_id.isin(proj.player_id)][["player_id", "gp", *STATS]].copy()
     # ESPN's own gp projections run ~20% higher than the model's for players in both frames (F2): scale
     # rookies (who have no history, so only ESPN gp is available) to the model's scale by that ratio.
@@ -129,21 +183,22 @@ def blend(proj, cur_games, k=20):
     return out
 
 
-def backtest(games, ages, settings):
-    """Fit on seasons before the last one, predict it, compare with 'repeat last season'."""
-    tab = season_table(games)
-    test = int(tab.season.max())
-    seasons = set(tab.season)
-    stat_m, gp_m = fit(tab, ages, [s for s in range(test - 3, test) if s - 1 in seasons], settings["season"])
-    pred = predict(stat_m, gp_m, tab, ages, test, settings["season"])
-    last = features(tab, ages, test, settings["season"]).rename(columns={f"{c}_1": c for c in STATS})
-    actual = tab[(tab.season == test) & (tab.GP >= 20)]
-    fp = lambda d: pd.Series(points(d.assign(**{c: 0.0 for c in RATES}), settings["scoring"]).values,
-                             index=d.player_id.values)
-    df = pd.concat({"actual": fp(actual), "model": fp(pred), "last": fp(last)}, axis=1, join="inner")
-    return {"season": test, "n": len(df),
-            "mae_model": round((df.model - df.actual).abs().mean(), 2),
-            "mae_last": round((df["last"] - df.actual).abs().mean(), 2)}
+def backtest(games, ages, settings, hist):
+    """Per test season: FP/g MAE of each stage (all players with 20+ games, and the top 150 by projected season FP)
+    vs 'repeat last season'. hist = {season: ESPN preseason projection}. attrs['w'] = the ESPN blend weight."""
+    tab, sc, season = season_table(games), settings["scoring"], settings["season"]
+    w = pick_weight(tab, ages, hist, sc, season)
+    rows = []
+    for t in sorted(hist):
+        if t - 2 not in set(tab.season):
+            continue
+        base = model_pred(tab, ages, t, season)
+        last = features(tab, ages, t, season).rename(columns={f"{c}_1": c for c in STATS}).assign(gp=lambda d: d.GP_1)
+        stages = {"last season": last, "baseline": base, "+A": blend_espn(base, espn_split(hist[t], tab, t - 1), w)}
+        rows += [{"season": t, "stage": k, **score(v, tab, t, sc)} for k, v in stages.items()]
+    out = pd.DataFrame(rows)
+    out.attrs["w"] = w
+    return out
 
 
 def main():
@@ -151,10 +206,17 @@ def main():
     games = pd.concat([pd.read_csv(DATA / f"games_{y}.csv") for y in s["history_seasons"]], ignore_index=True)
     a = pd.read_csv(DATA / "ages.csv")
     ages = dict(zip(a.player_id, a.age))
+    hist = {y: pd.read_csv(DATA / f"espn_proj_{y}.csv") for y in s["history_seasons"]
+            if (DATA / f"espn_proj_{y}.csv").exists()}
     if "--backtest" in sys.argv:
-        print(backtest(games, ages, s))
+        r = backtest(games, ages, s, hist)
+        print(f"ESPN blend weight on the model: {r.attrs['w']}")
+        for c in ("mae", "mae_top"):
+            t = r.pivot(index="stage", columns="season", values=c).reindex(r.stage.unique())
+            print(f"\nFP/g {c}" + (" (top 150)" if c == "mae_top" else ""))
+            print(t.assign(avg=t.mean(axis=1)).round(3).to_string())
         return
-    proj = build(games, pd.read_csv(DATA / "players.csv"), pd.read_csv(DATA / "espn_proj.csv"), ages, s)
+    proj = build(games, pd.read_csv(DATA / "players.csv"), pd.read_csv(DATA / "espn_proj.csv"), ages, s, hist)
     cur = DATA / f"games_{s['season']}.csv"  # this season's game logs (fetch.py), once it has any
     if cur.exists():
         proj = blend(proj, pd.read_csv(cur))

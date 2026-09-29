@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from model import RATES, STATS, fit, points, predict, season_table, shrunk_rates
+from model import RATES, STATS, backtest, blend_espn, espn_split, fit, pick_weight, points, predict, season_table, shrunk_rates
 
 SCORING = {"FGM": 0.5, "FGMI": -0.5, "FTM": 1, "FTMI": -1, "3PM": 2, "3PMI": -1, "OREB": 1.5, "DREB": 1,
            "AST": 1, "STL": 2, "BLK": 2, "TO": -1, "EJ": -100, "FF": -2, "TF": -3, "TD": 10, "QD": 100,
@@ -67,8 +67,8 @@ def test_build_rookie_fallback_and_injury_scaling():
     players = pd.DataFrame({"player_id": [0, 1, 999], "name": ["A", "B", "Rook"], "team_id": [1, 2, 3],
                             "positions": ["G|UTIL", "F|UTIL", "C|UTIL"], "adp": [1.0, 2.0, 3.0],
                             "injury_status": ["OUT", "ACTIVE", "ACTIVE"], "age": [25, 30, 19]})
-    espn = pd.DataFrame([{"player_id": 999, "gp": 70.0, **{c: 5.0 for c in STATS}, **{c: 0.0 for c in RATES}},
-                         {"player_id": 1, "gp": 10.0, **{c: 99.0 for c in STATS}, **{c: 0.0 for c in RATES}}])
+    espn = pd.DataFrame([{"player_id": 999, "gp": 70.0, **{c: 5.0 for c in STATS}, **{c: 0.0 for c in RATES}, "REB": 8.0},
+                         {"player_id": 1, "gp": 10.0, **{c: 99.0 for c in STATS}, **{c: 0.0 for c in RATES}, "REB": 8.0}])
     settings = {"season": 2027, "history_seasons": [2022, 2023, 2024, 2025, 2026], "scoring": SCORING}
     proj = build(games, players, espn, {0: 25, 1: 30}, settings).set_index("player_id")
     assert list(proj.reset_index().columns) == COLS
@@ -77,7 +77,8 @@ def test_build_rookie_fallback_and_injury_scaling():
     # (player 1 is ACTIVE, so its own gp is untouched by injury scaling and reflects the ratio directly)
     factor = proj.loc[1, "gp"] / 10.0
     assert proj.loc[999, "gp"] == pytest.approx(70.0 * factor) and proj.loc[999, "PTS"] == 5.0
-    assert proj.loc[1, "PTS"] < 50                                              # veteran ignores ESPN
+    assert proj.loc[999, "OREB"] == pytest.approx(8 * 0.27) and proj.loc[999, "DREB"] == pytest.approx(8 * 0.73)
+    assert 40 < proj.loc[1, "PTS"] < 60                                         # veteran: 50/50 with ESPN's 99
     assert proj.loc[0, "gp"] == pytest.approx(0.75 * proj.loc[1, "gp"], rel=0.1)  # OUT scaled
     assert proj.cv.notna().all() and proj[RATES].notna().all().all()
 
@@ -94,3 +95,37 @@ def test_blend_weights_current_season_by_games_played():
     assert out.loc[1, "PTS"] == pytest.approx(17.5)                                               # 60/80
     assert out.loc[2, "PTS"] == 10.0                                                              # no games: untouched
     assert (out.gp == 70).all() and (out.cv == 0.3).all()
+
+
+def espn_frame(bump=0.0, players=range(40)):
+    """ESPN preseason projection = the (constant) truth of fake_games + bump."""
+    return pd.DataFrame([{"player_id": p, "gp": 30.0, **{c: p % 10 + 1.0 + bump for c in STATS},
+                          "REB": 2 * (p % 10 + 1.0) + bump} for p in players])  # OREB = DREB = the stat
+
+
+def test_espn_split_uses_prior_season_oreb_share():
+    tab = pd.DataFrame({"player_id": [1, 2], "season": [2026, 2026], "OREB": [1.0, 0.0], "DREB": [3.0, 0.0]})
+    e = espn_split(pd.DataFrame({"player_id": [1, 2, 3], "REB": [8.0, 8.0, 10.0]}), tab, 2026).set_index("player_id")
+    assert e.OREB.tolist() == pytest.approx([2.0, 8 * 0.27, 2.7]) and (e.OREB + e.DREB).tolist() == [8.0, 8.0, 10.0]
+
+
+def test_blend_espn_mixes_stats_not_gp():
+    proj = pd.DataFrame({"player_id": [1, 2], "gp": [60.0, 60.0], **{c: [10.0, 10.0] for c in STATS}})
+    e = pd.DataFrame({"player_id": [1], "gp": [82.0], **{c: [20.0] for c in STATS}})
+    out = blend_espn(proj, e, 0.25).set_index("player_id")
+    assert out.PTS.tolist() == [17.5, 10.0] and out.gp.tolist() == [60.0, 60.0]  # 2 has no ESPN line
+
+
+def test_pick_weight_follows_the_better_source():
+    tab = season_table(fake_games())
+    exact = {t: espn_frame() for t in (2025, 2026)}
+    junk = {t: espn_frame(bump=30) for t in (2025, 2026)}
+    assert pick_weight(tab, {}, exact, SCORING, 2027) == 0.0
+    assert pick_weight(tab, {}, junk, SCORING, 2027) == 1.0
+    assert pick_weight(tab, {}, {2026: exact[2026]}, SCORING, 2027) == 0.5  # < 2 seasons: default
+
+
+def test_backtest_reports_each_stage_per_season():
+    r = backtest(fake_games(), {}, {"season": 2027, "scoring": SCORING}, {t: espn_frame() for t in (2025, 2026)})
+    assert list(r.stage.unique()) == ["last season", "baseline", "+A"] and set(r.season) == {2025, 2026}
+    assert r.attrs["w"] == 0.0 and (r[r.stage == "+A"].mae < 1e-9).all()  # ESPN was exact, so all weight goes to it
