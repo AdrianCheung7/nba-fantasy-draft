@@ -62,7 +62,7 @@ def test_validate():
 
 from draft import board, day_matrix, ev_matrix, slot_fit, starters, team_value
 from model import RATES, STATS
-from sim import calendar, espn_pick, sim_draft, sim_season
+from sim import availability, calendar, espn_pick, sim_draft, sim_season
 
 
 def make_board(rows, settings):
@@ -207,3 +207,25 @@ def test_best_switches_when_gap_clearly_beyond_noise():
         {"strategy": "durable", "opponents": "adp", "p_champion": 0.40, "p_bottom3": 0.05, "obj_se": 0.01},
     ])
     assert best(df) == "durable"
+
+
+def test_availability_is_one_contiguous_spell():
+    G = np.tile(np.arange(60) % 3 != 0, (500, 1))                      # 40 game days, every third day off
+    plays = availability(G, np.full(500, 0.6), np.random.default_rng(0))
+    assert not (plays & ~G).any()
+    for row, g in zip(plays[:50], G[:50]):
+        gap = np.flatnonzero(~row[g])                                  # missed games, by game number
+        assert len(gap) == 0 or gap[-1] - gap[0] + 1 == len(gap)
+    assert plays.sum(axis=1).mean() == pytest.approx(0.6 * 40, abs=1.0)
+    assert availability(G, np.ones(500), np.random.default_rng(0)).sum() == G.sum()   # avail 1: everyone plays
+
+
+def test_availability_beta_binomial_clumps_around_the_same_mean():
+    G = np.ones((4000, 82), bool)
+    plain = availability(G, np.full(4000, 0.75), np.random.default_rng(0)).mean(axis=1)
+    clumpy = availability(G, np.full(4000, 0.75), np.random.default_rng(0), k=np.full(4000, 2.0)).mean(axis=1)
+    assert plain.mean() == pytest.approx(0.75, abs=0.01) and clumpy.mean() == pytest.approx(0.75, abs=0.02)
+    assert plain.std() < 0.06 and clumpy.std() > 0.2                   # binomial ~0.05; beta(1.5, .5) ~0.25
+    always = availability(G, np.ones(4000), np.random.default_rng(0), k=np.full(4000, 50.0)).mean()
+    assert 0.96 < always < 0.995                                       # m is clipped to .98: nobody is a lock
+    assert availability(G, np.ones(4000), np.random.default_rng(0), k=np.full(4000, np.nan)).all()  # NaN: old way

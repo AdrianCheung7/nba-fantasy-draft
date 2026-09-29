@@ -62,7 +62,13 @@ def fit(tab, ages, targets, season, gp_cols=GP_FEATURES):
         X.append(f[FEATURES][played])
         Y.append(y[STATS][played])
     ridge = lambda: make_pipeline(StandardScaler(), Ridge(alpha=10))
-    return ridge().fit(pd.concat(X), pd.concat(Y)), ridge().fit(pd.concat(Xg), pd.concat(Yg))
+    Xg, Yg = pd.concat(Xg), pd.concat(Yg)
+    gp_m = ridge().fit(Xg, Yg)
+    # availability spread: method-of-moments beta-binomial kappa over rotation players (NaN if there are none)
+    rot = (Xg.MIN_1 >= 24).values
+    m, a = np.clip(gp_m.predict(Xg), 0, 82)[rot] / 82, Yg.values[rot] / 82
+    kappa = (m * (1 - m)).mean() / ((a - m) ** 2).mean() - 1 if rot.any() else np.nan
+    return ridge().fit(pd.concat(X), pd.concat(Y)), gp_m, kappa
 
 
 def clip_made(d):
@@ -87,7 +93,7 @@ def fpg(d, scoring):
 def model_pred(tab, ages, test, season, gp_cols=GP_FEATURES):
     """The regression's projection of season `test`, trained only on seasons before it."""
     seasons = set(tab.season)
-    stat_m, gp_m = fit(tab, ages, [s for s in range(test - 3, test) if s - 1 in seasons], season, gp_cols)
+    stat_m, gp_m, _ = fit(tab, ages, [s for s in range(test - 3, test) if s - 1 in seasons], season, gp_cols)
     return predict(stat_m, gp_m, tab, ages, test, season, gp_cols)
 
 
@@ -167,7 +173,7 @@ def shrunk_rates(games, target, k=SHRINK_K):
 
 
 INJURY_GP = {"OUT": 0.75, "INJURY_RESERVE": 0.5, "SUSPENSION": 0.9}  # ponytail: calibration knob
-OUT_COLS = ["player_id", "name", "team_id", "positions", "adp", "espn_rank", "injury_status", "age", "gp", "cv", *STATS, *RATES]
+OUT_COLS = ["player_id", "name", "team_id", "positions", "adp", "espn_rank", "injury_status", "age", "gp", "gp_k", "cv", *STATS, *RATES]
 
 
 def fp_cv(games, scoring, target):
@@ -182,7 +188,7 @@ def build(games, players, espn_proj, ages, settings, espn_hist=None):
     season = settings["season"]
     tab = season_table(games)
     seasons = set(tab.season)
-    stat_m, gp_m = fit(tab, ages, [s for s in settings["history_seasons"] if s - 1 in seasons], season)
+    stat_m, gp_m, kappa = fit(tab, ages, [s for s in settings["history_seasons"] if s - 1 in seasons], season)
     espn_proj = espn_split(espn_proj, tab, season - 1)
     w = pick_weight(tab, ages, espn_hist or {}, settings["scoring"], season)
     proj = blend_espn(predict(stat_m, gp_m, tab, ages, season, season), espn_proj, w)
@@ -205,11 +211,14 @@ def build(games, players, espn_proj, ages, settings, espn_hist=None):
     if "espn_rank" not in out:  # players.csv from before fetch.py added the column
         out["espn_rank"] = 999
     out["gp"] = out.gp * out.injury_status.map(INJURY_GP).fillna(1.0)
+    out["gp_k"] = kappa  # sim.availability: how clumped availability is around gp / 82
     return out[OUT_COLS]
 
 
 def blend(proj, cur_games, k=20):
     """D9: per-game rates = w * this season's + (1 - w) * projected, w = n / (n + k), n = games played."""
+    if cur_games.empty:  # fetch.py writes a header-only file before the season starts
+        return proj
     cols = STATS + RATES
     g = cur_games.groupby("player_id")
     n = g.size().reindex(proj.player_id).fillna(0).values[:, None]

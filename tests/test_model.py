@@ -37,7 +37,7 @@ def test_points_uses_edited_weights():
 
 def test_regression_recovers_stable_players():
     tab = season_table(fake_games())
-    stat_m, gp_m = fit(tab, {}, [2023, 2024, 2025, 2026], 2027)
+    stat_m, gp_m, _ = fit(tab, {}, [2023, 2024, 2025, 2026], 2027)
     pred = predict(stat_m, gp_m, tab, {}, 2027, 2027).set_index("player_id")
     for p in (0, 5, 9):
         assert pred.loc[p, "PTS"] == pytest.approx(p % 10 + 1, abs=0.6)
@@ -46,7 +46,7 @@ def test_regression_recovers_stable_players():
 
 def test_missing_season_player_projected():
     tab = season_table(fake_games(skip={(3, 2026)}))
-    stat_m, gp_m = fit(tab, {}, [2023, 2024, 2025, 2026], 2027)
+    stat_m, gp_m, _ = fit(tab, {}, [2023, 2024, 2025, 2026], 2027)
     pred = predict(stat_m, gp_m, tab, {}, 2027, 2027).set_index("player_id")
     assert 3 in pred.index and pred.loc[3, "PTS"] > 0
 
@@ -60,7 +60,7 @@ def test_shrunk_rates_pull_toward_league():
 
 from model import build
 
-COLS = ["player_id", "name", "team_id", "positions", "adp", "espn_rank", "injury_status", "age", "gp", "cv", *STATS, *RATES]
+COLS = ["player_id", "name", "team_id", "positions", "adp", "espn_rank", "injury_status", "age", "gp", "gp_k", "cv", *STATS, *RATES]
 
 
 def test_build_rookie_fallback_and_injury_scaling():
@@ -82,6 +82,7 @@ def test_build_rookie_fallback_and_injury_scaling():
     assert 40 < proj.loc[1, "PTS"] < 60                                         # veteran: 50/50 with ESPN's 99
     assert proj.loc[0, "gp"] == pytest.approx(0.75 * proj.loc[1, "gp"], rel=0.1)  # OUT scaled
     assert proj.cv.notna().all() and proj[RATES].notna().all().all()
+    assert proj.gp_k.isna().all()                                               # no rotation players in the fake league
 
 
 from model import blend
@@ -161,9 +162,24 @@ def test_primary_team_and_moved():
 def test_gp_model_uses_lean_features_with_age_squared():
     tab = season_table(fake_games())
     ages = {p: 20.0 + p for p in range(40)}
-    _, gp_m = fit(tab, ages, [2023, 2024, 2025, 2026], 2027)
+    _, gp_m, _ = fit(tab, ages, [2023, 2024, 2025, 2026], 2027)
     assert GP_FEATURES == ["GP_1", "GP_2", "GP_3", "MIN_1", "MIN_2", "MIN_3", "age", "age2"]
     assert gp_m.n_features_in_ == 8
     assert fit(tab, ages, [2023, 2024, 2025, 2026], 2027, FEATURES)[1].n_features_in_ == len(FEATURES)  # v2 (backtest)
     f = features(tab, ages, 2026, 2027)
     assert (f.age2 == f.age ** 2).all() and f.age.iloc[0] == 20.0 - 1
+
+
+def test_fit_kappa_by_method_of_moments_on_rotation_players():
+    rng = np.random.default_rng(0)
+    tab = pd.DataFrame([{"player_id": p, "season": s, **{c: 30.0 for c in STATS}, "GP": float(rng.binomial(82, 0.75))}
+                        for p in range(300) for s in range(2022, 2027)])
+    kappa = fit(tab, {}, [2023, 2024, 2025, 2026], 2027)[2]
+    assert 60 < kappa < 110          # plain binomial luck (no extra injury clumping): kappa ~ games - 1 = 81
+    assert np.isnan(fit(season_table(fake_games()), {}, [2023, 2024, 2025, 2026], 2027)[2])  # nobody plays 24+ MIN
+
+
+def test_blend_with_no_games_yet_leaves_projection_alone():
+    proj = pd.DataFrame({"player_id": [0], "gp": [70.0], "cv": [0.3], **{c: [10.0] for c in STATS + RATES}})
+    out = blend(proj, pd.DataFrame(columns=["season", "player_id", "period", *STATS, *RATES]))
+    assert out.PTS.dtype == float and out.PTS.tolist() == [10.0]  # fetch.py writes a header-only file before tip-off

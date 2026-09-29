@@ -98,25 +98,28 @@ def calendar(days, schedule, settings, matchups=None):
     return period, len(ids) - len(po), po
 
 
-def availability(G, avail, rng):
-    """One contiguous injury spell per player-season; length ~ Binomial(games, 1 - avail)."""
-    plays = G.copy()
-    for i in range(len(G)):
-        game_days = np.flatnonzero(G[i])
-        miss = rng.binomial(len(game_days), 1 - avail[i])
-        if miss:
-            start = rng.integers(0, len(game_days) - miss + 1)
-            plays[i, game_days[start:start + miss]] = False
-    return plays
+def availability(G, avail, rng, k=None):
+    """One contiguous injury spell per player-season; length ~ Binomial(games, 1 - a). a = avail, or with k
+    (models' beta-binomial concentration) a ~ Beta(m*k, (1-m)*k) around m = avail clipped to [.02, .98]: real
+    availability clumps (stars miss 10 games or 60, rarely 20)."""
+    n = G.sum(axis=1)
+    if k is not None and np.isfinite(k).all():
+        m = np.clip(avail, 0.02, 0.98)
+        avail = rng.beta(m * k, (1 - m) * k)
+    miss = rng.binomial(n, 1 - avail)
+    start = (rng.random(len(G)) * (n - miss + 1)).astype(int)
+    game_no = np.cumsum(G, axis=1) - 1
+    return G & ~((game_no >= start[:, None]) & (game_no < (start + miss)[:, None]))
 
 
 def sim_season(rosters, b, G, period, n_periods, fit, cap, rng):
     """Fantasy points (teams, matchup periods); daily lineup = draft.lineup on expected points of who plays."""
     fp, sd, avail = b.fp_pg.values, b.sd.values, b.avail.values
+    k = b.gp_k.values if "gp_k" in b else None  # projections.csv from before model.py fitted it: plain binomial
     weekly = np.zeros((len(rosters), n_periods))
     for t, r in enumerate(rosters):
         r = np.asarray(r, int)
-        plays = availability(G[r], avail[r], rng)
+        plays = availability(G[r], avail[r], rng, k[r] if k is not None else None)
         start = lineup(np.where(plays, fp[r, None], 0.0), fit[r], cap)
         real = np.where(start, rng.normal(fp[r, None], sd[r, None], plays.shape), 0.0)
         np.add.at(weekly[t], period, real.sum(axis=0))
