@@ -1,11 +1,12 @@
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from model import RATES, STATS, backtest, blend_espn, espn_split, fit, pick_weight, points, predict, season_table, shrunk_rates
+from model import RATES, STATS, backtest, blend_espn, moved, primary_team, espn_split, fit, pick_weight, points, predict, season_table, shrunk_rates, team_budget
 
 SCORING = {"FGM": 0.5, "FGMI": -0.5, "FTM": 1, "FTMI": -1, "3PM": 2, "3PMI": -1, "OREB": 1.5, "DREB": 1,
            "AST": 1, "STL": 2, "BLK": 2, "TO": -1, "EJ": -100, "FF": -2, "TF": -3, "TD": 10, "QD": 100,
@@ -22,7 +23,7 @@ def fake_games(n_players=40, seasons=(2022, 2023, 2024, 2025, 2026), games=30, s
                 continue
             for g in range(games):
                 rows.append({**{c: float(p % 10 + 1) for c in STATS}, **{c: 0.0 for c in RATES},
-                             "season": s, "player_id": p, "period": g})
+                             "season": s, "player_id": p, "period": g, "team_id": p % 3 + 1})
     return pd.DataFrame(rows)
 
 
@@ -127,5 +128,31 @@ def test_pick_weight_follows_the_better_source():
 
 def test_backtest_reports_each_stage_per_season():
     r = backtest(fake_games(), {}, {"season": 2027, "scoring": SCORING}, {t: espn_frame() for t in (2025, 2026)})
-    assert list(r.stage.unique()) == ["last season", "baseline", "+A"] and set(r.season) == {2025, 2026}
+    assert list(r.stage.unique()) == ["last season", "baseline", "+A", "+A+B"] and set(r.season) == {2025, 2026}
     assert r.attrs["w"] == 0.0 and (r[r.stage == "+A"].mae < 1e-9).all()  # ESPN was exact, so all weight goes to it
+
+
+def team_frame(**cols):
+    return pd.DataFrame({**{c: 0.0 for c in STATS}, "MIN": 30.0, **cols})
+
+
+def test_team_budget_pulls_team_rates_toward_league_more_for_movers():
+    p = team_frame(PTS=[20.0, 20.0, 10.0, 10.0])  # team 1 scores 20 per 30 min, team 2 10; league 15
+    out = team_budget(p, [1, 1, 2, 2], [False, True, False, False])
+    assert out.PTS.tolist() == pytest.approx([20 * 0.75 ** 0.5, 20 * 0.75, 10 * 1.5 ** 0.5, 10 * 1.5 ** 0.5])
+    assert out.MIN.tolist() == [30.0] * 4                                    # only the shot budget moves
+    out = team_budget(p, [0, 1, 2, float("nan")], [False] * 4)  # rows without a team stay as they are
+    assert out.PTS.tolist() == pytest.approx([20, 20 * 0.75 ** 0.5, 10 * 1.5 ** 0.5, 10])
+
+
+def test_team_budget_keeps_made_within_attempted():
+    p = team_frame(FGM=[10.0, 10.0, 30.0, 30.0], FGA=[10.0, 10.0, 20.0, 20.0])  # odd inputs: FGM scales x2, FGA x1.5
+    out = team_budget(p, [1, 1, 2, 2], [True] * 4)
+    assert (out.FGM <= out.FGA).all() and out.FGM[0] == pytest.approx(15.0)
+
+
+def test_primary_team_and_moved():
+    g = pd.DataFrame({"player_id": [1, 1, 1, 2], "team_id": [5, 6, 6, 7], "MIN": [20.0, 10.0, 12.0, 20.0]})
+    old = primary_team(g)
+    assert old.to_dict() == {1: 6, 2: 7}                                     # most minutes
+    assert moved([1, 2, 3], np.array([6, 9, 4]), old).tolist() == [False, True, False]  # 3 is a rookie: not moved

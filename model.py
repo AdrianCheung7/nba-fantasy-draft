@@ -16,6 +16,7 @@ RATES = ["EJ", "FF", "TF", "TD", "QD", "TW"]  # rare or team-driven: shrunk rate
 FEATURES = [f"{c}_{k}" for c in STATS + ["GP"] for k in (1, 2, 3)] + ["age"]
 SHRINK_K = 40  # ponytail: prior strength in weighted games; tune if rates look too flat/noisy
 MIN_GP_TRAIN = 10  # seasons shorter than this are too noisy to be stat targets
+SHOT = ["PTS", "FGM", "FGA", "FTM", "FTA", "3PM", "3PA", "TO"]  # stats a team's shot budget is shared out of
 OREB_SHARE = 0.27  # ponytail: league OREB/REB, for ESPN players with no prior-season line
 
 
@@ -62,11 +63,15 @@ def fit(tab, ages, targets, season):
     return ridge().fit(pd.concat(X), pd.concat(Y)), ridge().fit(pd.concat(Xg), pd.concat(Yg))
 
 
+def clip_made(d):
+    for made, att in (("FGM", "FGA"), ("FTM", "FTA"), ("3PM", "3PA")):
+        d[made] = d[[made, att]].min(axis=1)
+    return d
+
+
 def predict(stat_m, gp_m, tab, ages, target, season):
     f = features(tab, ages, target, season)
-    out = pd.DataFrame(stat_m.predict(f[FEATURES]), columns=STATS).clip(lower=0)
-    for made, att in (("FGM", "FGA"), ("FTM", "FTA"), ("3PM", "3PA")):
-        out[made] = out[[made, att]].min(axis=1)
+    out = clip_made(pd.DataFrame(stat_m.predict(f[FEATURES]), columns=STATS).clip(lower=0))
     out.insert(0, "player_id", f.player_id.values)
     out["gp"] = np.clip(gp_m.predict(f[FEATURES]), 0, 82)
     return out
@@ -97,6 +102,30 @@ def blend_espn(proj, e, w):
     out = proj.copy()
     out[STATS] = np.where(np.isnan(x), proj[STATS].values, w * proj[STATS].values + (1 - w) * np.nan_to_num(x))
     return out
+
+
+def primary_team(g):
+    """player_id -> the team he played the most minutes for in these game logs."""
+    return g.groupby(["player_id", "team_id"]).MIN.sum().groupby(level=0).idxmax().map(lambda i: i[1])
+
+
+def moved(pids, team, old):
+    """True where the player's `team` differs from `old` (pid -> last season's primary team); rookies: False."""
+    o = pd.Series(pids).map(old).values
+    return ~np.isnan(o) & (o != team)
+
+
+def team_budget(p, team, mv):
+    """Usage competition: SHOT stats *= (league rate / team rate) ** lam, rate = stat per projected minute over the
+    team's players, lam = 1 for players who changed teams (a new roster to share with), else 0.5.
+    `team`, `mv`: per-row team id and moved flag; rows without a team are left alone."""
+    p, t = p.copy(), pd.Series(np.asarray(team, float), index=p.index)
+    ok = (t > 0).values
+    q, t, lam = p[ok], t[ok], np.where(np.asarray(mv)[ok], 1.0, 0.5)
+    for c in SHOT:
+        q[c] = q[c] * ((q[c].sum() / q.MIN.sum()) / (q[c].groupby(t).transform("sum") / q.MIN.groupby(t).transform("sum"))) ** lam
+    p.loc[ok, SHOT] = q[SHOT]
+    return clip_made(p)
 
 
 def score(pred, tab, test, scoring, top=150):
@@ -165,6 +194,8 @@ def build(games, players, espn_proj, ages, settings, espn_hist=None):
     proj = proj.merge(cv, on="player_id", how="left")
     proj["cv"] = proj.cv.fillna(cv.cv.median())
     out = players.merge(proj, on="player_id")
+    last = primary_team(games[games.season == season - 1])
+    out = team_budget(out, out.team_id, moved(out.player_id, out.team_id.values, last))
     if "espn_rank" not in out:  # players.csv from before fetch.py added the column
         out["espn_rank"] = 999
     out["gp"] = out.gp * out.injury_status.map(INJURY_GP).fillna(1.0)
@@ -194,7 +225,12 @@ def backtest(games, ages, settings, hist):
             continue
         base = model_pred(tab, ages, t, season)
         last = features(tab, ages, t, season).rename(columns={f"{c}_1": c for c in STATS}).assign(gp=lambda d: d.GP_1)
-        stages = {"last season": last, "baseline": base, "+A": blend_espn(base, espn_split(hist[t], tab, t - 1), w)}
+        a = blend_espn(base, espn_split(hist[t], tab, t - 1), w)
+        old = primary_team(games[games.season == t - 1])
+        first = games[games.season == t].sort_values("period").groupby("player_id").team_id.first()
+        team = base.player_id.map(first).fillna(base.player_id.map(old)).values  # preseason team, roughly
+        stages = {"last season": last, "baseline": base, "+A": a,
+                  "+A+B": team_budget(a, team, moved(base.player_id, team, old))}
         rows += [{"season": t, "stage": k, **score(v, tab, t, sc)} for k, v in stages.items()]
     out = pd.DataFrame(rows)
     out.attrs["w"] = w

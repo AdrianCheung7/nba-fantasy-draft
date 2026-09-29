@@ -55,9 +55,10 @@ def entries(p, split, source, season):
 
 
 def parse_games(players, season):
-    rows = [{"season": season, "player_id": p["id"], "period": s.get("scoringPeriodId"), **stat_row(st)}
+    rows = [{"season": season, "player_id": p["id"], "period": s.get("scoringPeriodId"),
+             "team_id": s.get("proTeamId", 0), **stat_row(st)}
             for p in players for s, st in entries(p, 5, 0, season) if st.get("40", 0) > 0]
-    return pd.DataFrame(rows, columns=["season", "player_id", "period", *STAT_IDS])
+    return pd.DataFrame(rows, columns=["season", "player_id", "period", "team_id", *STAT_IDS])
 
 
 def parse_proj(players, season):

@@ -7,7 +7,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import fetch
 from fetch import parse_games, parse_players, parse_proj, parse_schedule, save
 
-GAME = {"statSplitTypeId": 5, "statSourceId": 0, "seasonId": 2026, "scoringPeriodId": 7,        "stats": {"0": 30.0, "4": 3.0, "7": 1.0, "13": 11.0, "14": 20.0, "40": 36.0, "43": 1.0}}
+GAME = {"statSplitTypeId": 5, "statSourceId": 0, "seasonId": 2026, "scoringPeriodId": 7, "proTeamId": 9,
+        "stats": {"0": 30.0, "4": 3.0, "7": 1.0, "13": 11.0, "14": 20.0, "40": 36.0, "43": 1.0}}
 DNP = {**GAME, "scoringPeriodId": 8, "stats": {}}
 PROJ = {"statSplitTypeId": 0, "statSourceId": 1, "seasonId": 2027, "stats": {"0": 1640.0, "42": 82.0}}
 PLAYER = {"id": 1, "fullName": "Test Guy", "active": True, "proTeamId": 5,
@@ -21,6 +22,8 @@ def test_parse_games_keeps_played_games_only():
     assert len(df) == 1
     r = df.iloc[0]
     assert (r.player_id, r.period, r.PTS, r.OREB, r.EJ, r.FGA, r.TW, r.BLK) == (1, 7, 30.0, 3.0, 1.0, 20.0, 1.0, 0.0)
+    assert r.team_id == 9  # the team he played that game for (a traded player has more than one)
+
 
 def test_parse_players_positions_and_defaults():
     players = [PLAYER, {"id": 2, "active": True}, {"id": 3, "active": True, "eligibleSlots": [4, 11],
