@@ -188,7 +188,8 @@ def test_advise():
     a = advise(b, ev, [{"overall": 1, "player": 0}], s)
     assert (a["on_clock"], a["my_next"]) == (1, 5)  # I'm on the clock; p_back refers to my pick after this
     top = a["top"]
-    assert list(top.columns) == ["player_id", "name", "pos", "fp_pg", "games", "value", "p_back"]
+    assert list(top.columns) == ["player_id", "name", "pos", "fp_pg", "games", "value", "p_back", "status"]
+    assert set(top.status) <= {"", "OUT", "DTD", "IR", "SUSP"}
     assert top.index[0] == 1 and 0 not in top.index and top.attrs["fallback"] is False
     assert top.pos.iloc[0] == "G" and top.p_back.between(0, 1).all()
     assert a["roster"] == [] and a["needs"] == ["UTIL"]
@@ -204,3 +205,11 @@ def test_advise():
     a = advise(b, ev, [{"overall": i, "player": i - 1} for i in range(1, 7)], s)
     assert (a["on_clock"], a["my_next"], len(a["top"])) == (None, None, 0)
     assert [r["player_id"] for r in a["roster"]] == [101, 104]
+
+
+def test_advise_status_tags():
+    s = {**LEAGUE, "teams": 2, "rounds": 2, "my_slot": 1, "slots": {"UTIL": 1, "IR": 1}}
+    b = make_board([(30, "UTIL|BE|IR", "OUT", 1), (20, "UTIL|BE|IR", "DAY_TO_DAY", 1), (10, "UTIL|BE|IR", "ACTIVE", 2)], s)
+    G, _ = day_matrix(b, SCHED)
+    top = advise(b, ev_matrix(b, G), [], s)["top"]
+    assert dict(zip(top.name, top.status)) == {"P0": "OUT", "P1": "DTD", "P2": ""}

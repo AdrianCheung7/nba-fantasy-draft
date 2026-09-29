@@ -222,7 +222,8 @@ def short_pos(p):
 
 
 UNLISTED = "(player not listed)"
-TOP_COLS = ["player_id", "name", "pos", "fp_pg", "games", "value", "p_back"]
+TOP_COLS = ["player_id", "name", "pos", "fp_pg", "games", "value", "p_back", "status"]
+STATUS_TAG = {"OUT": "OUT", "DAY_TO_DAY": "DTD", "INJURY_RESERVE": "IR", "SUSPENSION": "SUSP"}
 
 
 def advise(b, ev, picks, settings, strategy="greedy", po_mask=None):
@@ -259,7 +260,8 @@ def advise(b, ev, picks, settings, strategy="greedy", po_mask=None):
     p_back = survive(b, list(rec.index), taken, None if nxt is None else order[start:nxt], rosters, settings,
                      np.random.default_rng(0))
     top = pd.DataFrame({"player_id": rec.player_id, "name": rec["name"], "pos": rec.positions.map(short_pos),
-                        "fp_pg": rec.fp_pg, "games": rec.gp, "value": rec.marginal, "p_back": p_back.values})
+                        "fp_pg": rec.fp_pg, "games": rec.gp, "value": rec.marginal, "p_back": p_back.values,
+                        "status": rec.injury_status.map(STATUS_TAG).fillna("")})
     top.attrs["fallback"] = bool(rec.attrs["fallback"])
     return {"on_clock": order[n], "my_next": None if nxt is None else nxt + 1, "top": top, "roster": roster,
             "needs": needs}

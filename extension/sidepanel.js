@@ -1,7 +1,7 @@
 // Polls the local server; helpers (shortPos, turnText, ago) come from panel.js.
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const rows = (list, from) => list.map((p, i) => `<tr class="${from + i ? "" : "best"}"><td>${from + i + 1}</td><td>${esc(p.name)}</td>` +
+const rows = (list, from) => list.map((p, i) => `<tr class="${from + i ? "" : "best"}"><td>${from + i + 1}</td><td>${esc(p.name)}${p.status ? ` <span class="inj">${esc(p.status)}</span>` : ""}</td>` +
   `<td>${esc(shortPos(p.pos))}</td><td>${p.fp_pg.toFixed(1)}</td><td>${Math.round(p.value)}</td>` +
   `<td>${Math.round(p.p_back * 100)}%</td></tr>`).join("");
 const last = (n) => String(n).split(" ").slice(1).join(" ") || n;
