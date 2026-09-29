@@ -3,6 +3,7 @@ import json
 import os
 import re
 import threading
+import time
 import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -39,6 +40,7 @@ class App:
         self.mtime = None
         self.last = {"status": "no picks yet"}
         self.slot = None  # my slot as read off the Picks panel (my team's pick), else settings
+        self.reset_at = None  # when the last new draft was detected (the side panel shows a notice for a few seconds)
         self.last_url = None  # draft page of the stored picks (set by the replay of last_picks.json)
 
     def load(self):
@@ -111,10 +113,12 @@ class App:
         # or a known player shows up at a different pick (SGA/Jokic go 1-2 in every practice draft)
         league = re.search(r"leagueId=(\d+)", body.get("url") or "")
         old = re.search(r"leagueId=(\d+)", self.last_url or "")
-        if (league and old and league[1] != old[1]) \
-                or (known.get(1) is not None and 1 in new and new[1] != known[1]) \
-                or any(v is not None and known.get(o) != v and v in known.values() for o, v in new.items()):
-            known, self.slot = {}, None
+        # an empty list never erases picks of the SAME league (panel just not rendered), a different league resets at once
+        reset = bool((league and old and league[1] != old[1])
+                     or (known.get(1) is not None and 1 in new and new[1] != known[1])
+                     or any(v is not None and known.get(o) != v and v in known.values() for o, v in new.items()))
+        if reset:
+            known, self.slot, self.reset_at = {}, None, time.time()
         self.last_url = body.get("url") or self.last_url
         merged = {**known, **{o: v for o, v in new.items() if v is not None or o not in known}}  # never forget a pick
         self.slot = mine or self.slot
@@ -128,10 +132,12 @@ class App:
         out = {**r, "top": json.loads(top.to_json(orient="records")), "fallback": bool(top.attrs.get("fallback")),
                "mapped": len(body["picks"]) - len(unmatched), "unmatched": unmatched, "n_picks": n,
                "teams": teams, "me": slot - 1, "slot": slot}
+        if self.reset_at:
+            out["reset_at"] = self.reset_at
         if slot != s["my_slot"]:
             out["warning"] = f"Your draft slot on this page is {slot}, settings say {s['my_slot']} \u2014 using {slot}"
         self.last = json.loads(json.dumps(out, default=lambda o: o.item() if hasattr(o, "item") else str(o)))
-        return self.last
+        return {**self.last, "reset": True} if reset else self.last
 
 
 def make_server(home, port=PORT):
