@@ -14,6 +14,7 @@ DATA = ROOT / "data"
 STATS = ["PTS", "FGM", "FGA", "FTM", "FTA", "3PM", "3PA", "OREB", "DREB", "AST", "STL", "BLK", "TO", "MIN"]
 RATES = ["EJ", "FF", "TF", "TD", "QD", "TW"]  # rare or team-driven: shrunk rates, not regression
 FEATURES = [f"{c}_{k}" for c in STATS + ["GP"] for k in (1, 2, 3)] + ["age"]
+GP_FEATURES = [f"{c}_{k}" for c in ("GP", "MIN") for k in (1, 2, 3)] + ["age", "age2"]  # games played: lean beats FEATURES
 SHRINK_K = 40  # ponytail: prior strength in weighted games; tune if rates look too flat/noisy
 MIN_GP_TRAIN = 10  # seasons shorter than this are too noisy to be stat targets
 SHOT = ["PTS", "FGM", "FGA", "FTM", "FTA", "3PM", "3PA", "TO"]  # stats a team's shot budget is shared out of
@@ -46,15 +47,16 @@ def features(tab, ages, target, season):
         base[f"GP_{k}"] = base[f"GP_{k}"].fillna(0)  # missed season = 0 games: that IS the signal
     age_now = base.player_id.map(ages).astype(float)  # ages are as of the draft season
     base["age"] = (age_now.fillna(age_now.median()) - (season - target)).fillna(27)
+    base["age2"] = base.age ** 2
     return base
 
 
-def fit(tab, ages, targets, season):
+def fit(tab, ages, targets, season, gp_cols=GP_FEATURES):
     X, Y, Xg, Yg = [], [], [], []
     for t in targets:
         f = features(tab, ages, t, season)
         y = f[["player_id"]].merge(tab[tab.season == t], on="player_id", how="left")
-        Xg.append(f[FEATURES])
+        Xg.append(f[gp_cols])
         Yg.append(y.GP.fillna(0))
         played = (y.GP >= MIN_GP_TRAIN).values
         X.append(f[FEATURES][played])
@@ -69,11 +71,11 @@ def clip_made(d):
     return d
 
 
-def predict(stat_m, gp_m, tab, ages, target, season):
+def predict(stat_m, gp_m, tab, ages, target, season, gp_cols=GP_FEATURES):
     f = features(tab, ages, target, season)
     out = clip_made(pd.DataFrame(stat_m.predict(f[FEATURES]), columns=STATS).clip(lower=0))
     out.insert(0, "player_id", f.player_id.values)
-    out["gp"] = np.clip(gp_m.predict(f[FEATURES]), 0, 82)
+    out["gp"] = np.clip(gp_m.predict(f[gp_cols]), 0, 82)
     return out
 
 
@@ -82,11 +84,11 @@ def fpg(d, scoring):
     return pd.Series(points(d.assign(**{c: 0.0 for c in RATES}), scoring).values, index=d.player_id.values)
 
 
-def model_pred(tab, ages, test, season):
+def model_pred(tab, ages, test, season, gp_cols=GP_FEATURES):
     """The regression's projection of season `test`, trained only on seasons before it."""
     seasons = set(tab.season)
-    stat_m, gp_m = fit(tab, ages, [s for s in range(test - 3, test) if s - 1 in seasons], season)
-    return predict(stat_m, gp_m, tab, ages, test, season)
+    stat_m, gp_m = fit(tab, ages, [s for s in range(test - 3, test) if s - 1 in seasons], season, gp_cols)
+    return predict(stat_m, gp_m, tab, ages, test, season, gp_cols)
 
 
 def espn_split(e, tab, prev):
@@ -128,14 +130,18 @@ def team_budget(p, team, mv):
     return clip_made(p)
 
 
-def score(pred, tab, test, scoring, top=150):
+def score(pred, tab, test, scoring, top=150, rel=None):
     """FP/g MAE of a projection vs the season's actuals (players with 20+ games): all, and the `top` by projected
-    season FP."""
+    season FP; and GP MAE over `rel` player ids (default: those projected 20+ games), a no-show counting 0 games."""
     actual = tab[(tab.season == test) & (tab.GP >= 20)]
     d = pd.concat({"a": fpg(actual, scoring), "p": fpg(pred, scoring)}, axis=1, join="inner")
     d["val"] = d.p * pred.set_index("player_id").gp.reindex(d.index)
     e = (d.p - d.a).abs()
-    return {"n": len(d), "mae": e.mean(), "mae_top": e[d.val.nlargest(top).index].mean()}
+    g = pred.set_index("player_id").gp
+    rel = g.index[g >= 20] if rel is None else rel
+    played = tab[tab.season == test].set_index("player_id").GP.reindex(rel).fillna(0)
+    return {"n": len(d), "mae": e.mean(), "mae_top": e[d.val.nlargest(top).index].mean(),
+            "gp_mae": (g.reindex(rel) - played).abs().mean()}
 
 
 def pick_weight(tab, ages, hist, scoring, season):
@@ -223,15 +229,17 @@ def backtest(games, ages, settings, hist):
     for t in sorted(hist):
         if t - 2 not in set(tab.season):
             continue
-        base = model_pred(tab, ages, t, season)
+        base, lean = model_pred(tab, ages, t, season, FEATURES), model_pred(tab, ages, t, season)  # v2 GP model, new
         last = features(tab, ages, t, season).rename(columns={f"{c}_1": c for c in STATS}).assign(gp=lambda d: d.GP_1)
-        a = blend_espn(base, espn_split(hist[t], tab, t - 1), w)
+        e = espn_split(hist[t], tab, t - 1)
         old = primary_team(games[games.season == t - 1])
         first = games[games.season == t].sort_values("period").groupby("player_id").team_id.first()
         team = base.player_id.map(first).fillna(base.player_id.map(old)).values  # preseason team, roughly
-        stages = {"last season": last, "baseline": base, "+A": a,
-                  "+A+B": team_budget(a, team, moved(base.player_id, team, old))}
-        rows += [{"season": t, "stage": k, **score(v, tab, t, sc)} for k, v in stages.items()]
+        a, c = (blend_espn(p, e, w) for p in (base, lean))
+        b = lambda p: team_budget(p, team, moved(base.player_id, team, old))
+        stages = {"last season": last, "baseline": base, "+A": a, "+A+B": b(a), "+A+B+C": b(c)}
+        rel = base.player_id[base.gp >= 20]
+        rows += [{"season": t, "stage": k, **score(v, tab, t, sc, rel=rel)} for k, v in stages.items()]
     out = pd.DataFrame(rows)
     out.attrs["w"] = w
     return out
@@ -247,9 +255,9 @@ def main():
     if "--backtest" in sys.argv:
         r = backtest(games, ages, s, hist)
         print(f"ESPN blend weight on the model: {r.attrs['w']}")
-        for c in ("mae", "mae_top"):
+        for c, name in (("mae", "FP/g MAE"), ("mae_top", "FP/g MAE, top 150"), ("gp_mae", "GP MAE")):
             t = r.pivot(index="stage", columns="season", values=c).reindex(r.stage.unique())
-            print(f"\nFP/g {c}" + (" (top 150)" if c == "mae_top" else ""))
+            print(f"\n{name}")
             print(t.assign(avg=t.mean(axis=1)).round(3).to_string())
         return
     proj = build(games, pd.read_csv(DATA / "players.csv"), pd.read_csv(DATA / "espn_proj.csv"), ages, s, hist)

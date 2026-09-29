@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from model import RATES, STATS, backtest, blend_espn, moved, primary_team, espn_split, fit, pick_weight, points, predict, season_table, shrunk_rates, team_budget
+from model import FEATURES, GP_FEATURES, RATES, STATS, backtest, blend_espn, features, moved, primary_team, espn_split, fit, pick_weight, points, predict, season_table, shrunk_rates, team_budget
 
 SCORING = {"FGM": 0.5, "FGMI": -0.5, "FTM": 1, "FTMI": -1, "3PM": 2, "3PMI": -1, "OREB": 1.5, "DREB": 1,
            "AST": 1, "STL": 2, "BLK": 2, "TO": -1, "EJ": -100, "FF": -2, "TF": -3, "TD": 10, "QD": 100,
@@ -128,7 +128,7 @@ def test_pick_weight_follows_the_better_source():
 
 def test_backtest_reports_each_stage_per_season():
     r = backtest(fake_games(), {}, {"season": 2027, "scoring": SCORING}, {t: espn_frame() for t in (2025, 2026)})
-    assert list(r.stage.unique()) == ["last season", "baseline", "+A", "+A+B"] and set(r.season) == {2025, 2026}
+    assert list(r.stage.unique()) == ["last season", "baseline", "+A", "+A+B", "+A+B+C"] and set(r.season) == {2025, 2026}
     assert r.attrs["w"] == 0.0 and (r[r.stage == "+A"].mae < 1e-9).all()  # ESPN was exact, so all weight goes to it
 
 
@@ -156,3 +156,14 @@ def test_primary_team_and_moved():
     old = primary_team(g)
     assert old.to_dict() == {1: 6, 2: 7}                                     # most minutes
     assert moved([1, 2, 3], np.array([6, 9, 4]), old).tolist() == [False, True, False]  # 3 is a rookie: not moved
+
+
+def test_gp_model_uses_lean_features_with_age_squared():
+    tab = season_table(fake_games())
+    ages = {p: 20.0 + p for p in range(40)}
+    _, gp_m = fit(tab, ages, [2023, 2024, 2025, 2026], 2027)
+    assert GP_FEATURES == ["GP_1", "GP_2", "GP_3", "MIN_1", "MIN_2", "MIN_3", "age", "age2"]
+    assert gp_m.n_features_in_ == 8
+    assert fit(tab, ages, [2023, 2024, 2025, 2026], 2027, FEATURES)[1].n_features_in_ == len(FEATURES)  # v2 (backtest)
+    f = features(tab, ages, 2026, 2027)
+    assert (f.age2 == f.age ** 2).all() and f.age.iloc[0] == 20.0 - 1
