@@ -62,7 +62,7 @@ def test_validate():
 
 from draft import board, day_matrix, ev_matrix, slot_fit, starters, team_value
 from model import RATES, STATS
-from sim import availability, calendar, espn_pick, sim_draft, sim_season
+from sim import availability, back_to_back, calendar, espn_pick, sim_draft, sim_season
 
 
 def make_board(rows, settings):
@@ -229,3 +229,32 @@ def test_availability_beta_binomial_clumps_around_the_same_mean():
     always = availability(G, np.ones(4000), np.random.default_rng(0), k=np.full(4000, 50.0)).mean()
     assert 0.96 < always < 0.995                                       # m is clipped to .98: nobody is a lock
     assert availability(G, np.ones(4000), np.random.default_rng(0), k=np.full(4000, np.nan)).all()  # NaN: old way
+
+
+def test_back_to_back_is_second_consecutive_night():
+    days = np.array(["2026-10-19", "2026-10-20", "2026-10-21", "2026-10-23", "2026-10-25", "2026-10-26"])
+    G = np.array([[1, 1, 1, 0, 0, 1], [1, 0, 1, 1, 1, 1]], bool)       # team 2: 21st -> 23rd is not consecutive
+    assert back_to_back(G, days).astype(int).tolist() == [[0, 1, 1, 0, 0, 0], [0, 0, 0, 0, 0, 1]]
+
+
+def test_availability_rests_older_players_on_back_to_backs_but_keeps_the_season_total():
+    G = np.ones((3000, 80), bool)
+    b2b = G & (np.arange(80) % 2 == 1)                                 # every other night is a 2nd night
+    pen = np.full(3000, 0.14)
+    plays = availability(G, np.full(3000, 0.8), np.random.default_rng(0), b2b=b2b, pen=pen)
+    assert plays.mean() == pytest.approx(0.8, abs=0.01)                # GP model already counts these misses
+    assert plays[:, 1::2].mean() < plays[:, ::2].mean() - 0.1
+    none = availability(G, np.full(3000, 0.8), np.random.default_rng(0), b2b=b2b, pen=np.zeros(3000))
+    assert abs(none[:, 1::2].mean() - none[:, ::2].mean()) < 0.03
+
+
+def test_sim_season_rests_only_rotation_veterans_on_back_to_backs():
+    s = {**TINY, "slots": {"UTIL": 3, "BE": 0}}
+    b = make_board([(30, "UTIL", "ACTIVE", 1, 0.0)] * 3, s)
+    b["MIN"], b["age"] = [30.0, 30.0, 15.0], [24.0, 44.0, 44.0]        # pen: 0, .14, 0 (bench minutes)
+    G = np.ones((3, 1000), bool)
+    b2b = G.copy()
+    b2b[:, 0] = False
+    fit, cap = slot_fit(b, s)
+    weekly = sim_season([[0], [1], [2]], b, G, np.zeros(1000, int), 1, fit, cap, np.random.default_rng(0), b2b)
+    assert weekly[:, 0] == pytest.approx([30 * 1000, 30 * 1000 * 0.86, 30 * 1000], rel=0.04)
