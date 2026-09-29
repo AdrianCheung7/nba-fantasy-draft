@@ -98,25 +98,46 @@ def calendar(days, schedule, settings, matchups=None):
     return period, len(ids) - len(po), po
 
 
-def availability(G, avail, rng):
-    """One contiguous injury spell per player-season; length ~ Binomial(games, 1 - avail)."""
-    plays = G.copy()
-    for i in range(len(G)):
-        game_days = np.flatnonzero(G[i])
-        miss = rng.binomial(len(game_days), 1 - avail[i])
-        if miss:
-            start = rng.integers(0, len(game_days) - miss + 1)
-            plays[i, game_days[start:start + miss]] = False
-    return plays
+def back_to_back(G, days):
+    """G (teams' rows x days) -> True where the team also played the previous calendar day."""
+    d = pd.to_datetime(days)
+    prev = pd.Series(np.arange(len(d)), index=d).reindex(d - pd.Timedelta(days=1)).values  # NaN: no game day then
+    has = ~np.isnan(prev)
+    B = np.zeros_like(G)
+    B[:, has] = G[:, has] & G[:, prev[has].astype(int)]
+    return B
 
 
-def sim_season(rosters, b, G, period, n_periods, fit, cap, rng):
-    """Fantasy points (teams, matchup periods); daily lineup = draft.lineup on expected points of who plays."""
+def availability(G, avail, rng, k=None, b2b=None, pen=None):
+    """One contiguous injury spell per player-season; length ~ Binomial(games, 1 - a). a = avail, or with k
+    (fitted in model.py, output as gp_k) a ~ Beta(m*k, (1-m)*k) around m = avail clipped to [.02, .98]: real
+    availability clumps (stars miss 10 games or 60, rarely 20).
+    b2b (same shape as G) + pen (per player): on those 2nd nights he also sits with probability pen. The GP model
+    already counts these misses, so a is raised to keep the expected season total."""
+    n = G.sum(axis=1)
+    if b2b is not None:
+        avail = np.minimum(avail / (1 - pen * b2b.sum(axis=1) / np.maximum(n, 1)), 1)
+    if k is not None and np.isfinite(k).all():
+        m = np.clip(avail, 0.02, 0.98)
+        avail = rng.beta(m * k, (1 - m) * k)
+    miss = rng.binomial(n, 1 - avail)
+    start = (rng.random(len(G)) * (n - miss + 1)).astype(int)
+    game_no = np.cumsum(G, axis=1) - 1
+    plays = G & ~((game_no >= start[:, None]) & (game_no < (start + miss)[:, None]))
+    return plays if b2b is None else plays & ~(b2b & (rng.random(G.shape) < pen[:, None]))
+
+
+def sim_season(rosters, b, G, period, n_periods, fit, cap, rng, b2b=None):
+    """Fantasy points (teams, matchup periods); daily lineup = draft.lineup on expected points of who plays.
+    b2b: (players, days) 2nd-night flags; rotation veterans (MIN > 22) rest there, more with age."""
     fp, sd, avail = b.fp_pg.values, b.sd.values, b.avail.values
+    k = b.gp_k.values if "gp_k" in b else None  # projections.csv from before model.py fitted it: plain binomial
+    pen = np.where(b.MIN.values > 22, np.clip(0.012 * (np.nan_to_num(b.age.values, nan=24) - 24), 0, 0.14), 0)
     weekly = np.zeros((len(rosters), n_periods))
     for t, r in enumerate(rosters):
         r = np.asarray(r, int)
-        plays = availability(G[r], avail[r], rng)
+        plays = availability(G[r], avail[r], rng, k[r] if k is not None else None,
+                             None if b2b is None else b2b[r], pen[r])
         start = lineup(np.where(plays, fp[r, None], 0.0), fit[r], cap)
         real = np.where(start, rng.normal(fp[r, None], sd[r, None], plays.shape), 0.0)
         np.add.at(weekly[t], period, real.sum(axis=0))
@@ -165,10 +186,11 @@ def prep(settings, b=None, schedule=None, matchups=None, draftable=True):
     b = board(pd.read_csv(DATA / "projections.csv"), settings) if b is None else b
     b = trim(b, settings) if draftable else b
     G, days = day_matrix(b, schedule)
+    B = back_to_back(G, days)
     period, n_reg, po = calendar(days, schedule, settings, matchups)
-    G, period = G[:, period >= 0], period[period >= 0]
+    G, B, period = G[:, period >= 0], B[:, period >= 0], period[period >= 0]
     fit, cap = slot_fit(b, settings)
-    return dict(b=b, G=G, ev=ev_matrix(b, G), period=period, n_periods=int(period.max()) + 1, n_reg=n_reg, po=po,
+    return dict(b=b, G=G, b2b=B, ev=ev_matrix(b, G), period=period, n_periods=int(period.max()) + 1, n_reg=n_reg, po=po,
                 po_mask=np.isin(period, po), fit=fit, cap=cap)
 
 
@@ -177,7 +199,7 @@ def season_stats(rosters, c, settings, rng, n_seasons):
     teams, p, rp = len(rosters), settings["playoff_teams"], settings.get("playoff_round_periods", 1)
     m = np.zeros((teams, 5))
     for _ in range(n_seasons):
-        weekly = sim_season(rosters, c["b"], c["G"], c["period"], c["n_periods"], c["fit"], c["cap"], rng)
+        weekly = sim_season(rosters, c["b"], c["G"], c["period"], c["n_periods"], c["fit"], c["cap"], rng, c["b2b"])
         rank, wins = regular_season(weekly, c["n_reg"])
         place = np.argsort(rank)
         m[playoffs(list(rank[:p]), weekly, c["po"], rp), 0] += 1

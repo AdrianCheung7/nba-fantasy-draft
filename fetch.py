@@ -55,15 +55,18 @@ def entries(p, split, source, season):
 
 
 def parse_games(players, season):
-    rows = [{"season": season, "player_id": p["id"], "period": s.get("scoringPeriodId"), **stat_row(st)}
+    rows = [{"season": season, "player_id": p["id"], "period": s.get("scoringPeriodId"),
+             "team_id": s.get("proTeamId", 0), **stat_row(st)}
             for p in players for s, st in entries(p, 5, 0, season) if st.get("40", 0) > 0]
-    return pd.DataFrame(rows, columns=["season", "player_id", "period", *STAT_IDS])
+    return pd.DataFrame(rows, columns=["season", "player_id", "period", "team_id", *STAT_IDS])
 
 
 def parse_proj(players, season):
-    rows = [{"player_id": p["id"], "gp": st["42"], **{k: v / st["42"] for k, v in stat_row(st).items()}}
+    # ESPN projects total rebounds (id 6) only: OREB/DREB stay 0 here, model.py splits REB
+    rows = [{"player_id": p["id"], "gp": st["42"], **{k: v / st["42"] for k, v in stat_row(st).items()},
+             "REB": st.get("6", 0.0) / st["42"]}
             for p in players for _, st in entries(p, 0, 1, season) if st.get("42", 0) > 0]
-    return pd.DataFrame(rows, columns=["player_id", "gp", *STAT_IDS])
+    return pd.DataFrame(rows, columns=["player_id", "gp", *STAT_IDS, "REB"])
 
 
 def rank(p):
@@ -114,10 +117,12 @@ def main(refresh=False):
     s = json.loads((ROOT / "settings.json").read_text())
     DATA.mkdir(exist_ok=True)
     for season in s["history_seasons"]:
-        out = DATA / f"games_{season}.csv"
-        if refresh or not out.exists():
+        out, proj = DATA / f"games_{season}.csv", DATA / f"espn_proj_{season}.csv"
+        if refresh or not (out.exists() and proj.exists()):
             print(f"fetching {season} game logs ...")
-            save(parse_games(get(PLAYERS.format(season=season), headers=PLAYER_HEADERS), season), out)
+            past = get(PLAYERS.format(season=season), headers=PLAYER_HEADERS)
+            save(parse_games(past, season), out)
+            save(parse_proj(past, season), proj)  # that season's preseason ESPN projection: model.py picks its blend weight
     print("fetching 2026-27 players ...")
     cur = get(PLAYERS.format(season=s["season"]), headers=PLAYER_HEADERS)
     save(parse_proj(cur, s["season"]), DATA / "espn_proj.csv")
