@@ -87,8 +87,10 @@ def test_post_maps_persists_and_responds(api, home):
     assert [p["overall"] for p in calls[-1]] == [1, 2, 3, 4, 5, 6, 7]
     saved = json.loads((home / "data" / "draft.json").read_text())
     assert saved == [3112335, 3032977, 4432166, None, None, 5217746, 2]
-    assert call("/picks", {"picks": picks})[0] == r  # idempotent
-    assert call("/state")[0] == r
+    again = call("/picks", {"picks": picks})[0]
+    assert {**again, "synced_at": 0} == {**r, "synced_at": 0}  # idempotent
+    assert r["rounds"] == 12 and again["synced_at"] >= r["synced_at"] > 0  # footer: n/(teams*rounds), "synced Ns ago"
+    assert call("/state")[0] == again
 
 
 def test_cors_preflight(api):
@@ -189,3 +191,39 @@ def test_recompute_on_settings_change_and_restart(api, home):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+URL = "https://fantasy.espn.com/basketball/draft?leagueId=%s&teamId=13"
+TWO = [pick(1, "Nikola Jokic", 3112335), pick(2, "Giannis Antetokounmpo", 3032977)]
+
+
+def test_empty_post_for_a_new_league_resets_at_once(api, home):
+    call, calls = api
+    r, _ = call("/picks", {"picks": TWO, "url": URL % 111})
+    assert "reset" not in r
+    r, _ = call("/picks", {"picks": [], "url": URL % 222})
+    assert r["reset"] is True and r["n_picks"] == 0 and calls[-1] == []
+    assert json.loads((home / "data" / "draft.json").read_text()) == []
+    last = json.loads((home / "data" / "last_picks.json").read_text())
+    assert last["picks"] == [] and last["url"] == URL % 222
+    state, _ = call("/state")
+    assert "reset" not in state and state["n_picks"] == 0 and state["reset_at"] > 0  # the panel's notice keys off this
+    r, _ = call("/picks", {"picks": TWO, "url": URL % 222})  # the new draft's first picks: not another reset
+    assert "reset" not in r and players(calls) == [0, 1]
+
+
+def test_empty_post_for_the_same_league_keeps_picks(api, home):
+    call, calls = api
+    call("/picks", {"picks": TWO, "url": URL % 111})
+    r, _ = call("/picks", {"picks": [], "url": URL % 111})  # panel not rendered yet
+    assert "reset" not in r and players(calls) == [0, 1] and r["n_picks"] == 2
+    assert json.loads((home / "data" / "draft.json").read_text()) == [3112335, 3032977]
+
+
+def test_reload_of_the_same_draft_page_never_resets(api):
+    call, calls = api
+    call("/picks", {"picks": TWO, "url": URL % 111})
+    for picks in (TWO, []):
+        r, _ = call("/picks", {"picks": picks, "url": URL % 111 + "&x=1"})
+        assert "reset" not in r and players(calls) == [0, 1]
+    assert "reset_at" not in call("/state")[0]

@@ -46,7 +46,7 @@ function update() {
 const run = singleFlight((done) => {
   const picks = parsePicks(document, teams);
   const key = JSON.stringify(picks);
-  if (key === sent || !picks.length) return update(), done(true); // never post an empty list: panel may just not be rendered
+  if (key === sent) return update(), done(true); // an empty list is posted too: the server resets on a new leagueId, never on empty alone
   chrome.runtime.sendMessage({ picks, url: location.href }, (r) => {
     if (chrome.runtime.lastError || !r || r.error) return done(false); // server down: singleFlight retries
     sent = key;
