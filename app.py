@@ -295,7 +295,8 @@ with draft_tab:
             "Value": rec.value.round(0),
             "% still there": (rec.p_back * 100).round(0),
         }), hide_index=True)
-        st.caption("Value = season points the player adds to your lineup. "
+        st.caption(("Value = season category value (summed G-scores over replacement) the player adds to your lineup. "
+                    if CATS else "Value = season points the player adds to your lineup. ") +
                    "% still there = chance they are still available at your next pick.")
         if rec.attrs["fallback"]:  # M7
             st.caption("No fully legal pick left - showing best available.")

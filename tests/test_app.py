@@ -195,6 +195,9 @@ def test_category_league_labels_value_and_flags_sim(home):
     assert not at.exception
     assert "Value/g" in at.dataframe[0].value.columns and "Pts/game" not in at.dataframe[0].value.columns
     assert any("approximate in category leagues" in c.value for c in at.caption)
+    assert not any("season points" in c.value for c in at.caption)
+    from sim import LEAGUE_KEYS
+    assert {"format", "categories"} <= set(LEAGUE_KEYS)  # a saved sim from another category setup is stale
     assert "scoring" not in json.loads((home / "settings.json").read_text())
 
 
