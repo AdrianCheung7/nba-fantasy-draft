@@ -25,7 +25,7 @@ SEEN = []  # settings each fake advise call received
 @pytest.fixture
 def home(tmp_path):
     (tmp_path / "data").mkdir()
-    shutil.copy(ROOT / "settings.json", tmp_path / "settings.json")
+    shutil.copy(ROOT / "tests" / "fixtures" / "settings_points.json", tmp_path / "settings.json")
     rows = [dict(player_id=i, name=n, team_id=t, positions="C|UTIL|BE", adp=float(k), injury_status="ACTIVE",
                  age=25.0, gp=70.0, cv=0.3, **dict.fromkeys(STATS, 1.0)) for k, (i, n, t) in enumerate(PLAYERS)]
     pd.DataFrame(rows).to_csv(tmp_path / "data" / "projections.csv", index=False)

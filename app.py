@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 import espn
-from draft import STRATEGIES, advise, board, day_matrix, ev_matrix, slot_fit, snake, starters
+from draft import advise, board, day_matrix, ev_matrix, offered, slot_fit, snake, starters
 from fetch import SLOT_NAMES
 from season import matchup_projection, pickups, rest_of_matchup, split_roster, week_ev, window
 from season import INJURY, adds_left, cat_lines, cat_matchup, cat_pickups, cat_scores, so_far_from_scores, value_series
@@ -91,7 +91,7 @@ with st.sidebar:
             st.caption("Strategy results are for different league settings - rerun.")
             sim = None
             default = "greedy"
-    strat_names = list(STRATEGIES)
+    strat_names = offered(s)
     if st.button("Sync league from ESPN", key="sync"):  # rewrites settings.json + data/matchups.csv (needs espn_auth.json)
         r = subprocess.run([sys.executable, str(ROOT / "espn.py")], cwd=ROOT, capture_output=True, text=True)
         if r.returncode:

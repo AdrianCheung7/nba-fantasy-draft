@@ -17,7 +17,7 @@ def home(tmp_path, monkeypatch):
     (tmp_path / "data").mkdir()
     shutil.copy(ROOT / "data" / "projections.csv", tmp_path / "data" / "projections.csv")
     shutil.copy(ROOT / "data" / "schedule.csv", tmp_path / "data" / "schedule.csv")
-    shutil.copy(ROOT / "settings.json", tmp_path / "settings.json")
+    shutil.copy(ROOT / "tests" / "fixtures" / "settings_points.json", tmp_path / "settings.json")
     monkeypatch.setenv("DRAFT_HOME", str(tmp_path))
     return tmp_path
 
@@ -79,7 +79,7 @@ def test_reducing_teams_below_playoff_teams_no_error(at):
 def test_missing_data_shows_error_message(tmp_path, monkeypatch):
     """Fresh clone with settings.json but no data/ shows the fetch.py message, not a traceback."""
     from streamlit.testing.v1 import AppTest
-    shutil.copy(ROOT / "settings.json", tmp_path / "settings.json")
+    shutil.copy(ROOT / "tests" / "fixtures" / "settings_points.json", tmp_path / "settings.json")
     monkeypatch.setenv("DRAFT_HOME", str(tmp_path))
     at2 = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60).run()
     assert not at2.exception

@@ -142,7 +142,7 @@ def test_espn_pick_unranked_after_ranked_then_by_value():
     assert espn_pick(b, [], {1}, TINY, np.random.default_rng(0)) == 2
 
 
-from draft import STRATEGIES
+from draft import STRATEGIES, offered
 from sim import best, from_draft, report, report_from_rosters, run
 
 
@@ -151,7 +151,7 @@ def test_run_smoke():
     b = make_board([(40 - 3 * i, "UTIL|BE|IR", "OUT" if i == 5 else "ACTIVE", 1 + i % 4, 0.3)
                     for i in range(12)], s)
     df = run(s, 2, n_drafts=2, n_seasons=3, b=b, schedule=make_schedule())
-    assert len(df) == len(STRATEGIES) * 2
+    assert len(df) == len(offered(s)) * 2  # punts: category leagues only
     assert df[["p_champion", "p_playoffs", "p_bottom3"]].stack().between(0, 1).all()
     assert "obj_se" in df.columns and (df.obj_se >= 0).all()
     assert best(df) in STRATEGIES
@@ -258,3 +258,63 @@ def test_sim_season_rests_only_rotation_veterans_on_back_to_backs():
     fit, cap = slot_fit(b, s)
     weekly = sim_season([[0], [1], [2]], b, G, np.zeros(1000, int), 1, fit, cap, np.random.default_rng(0), b2b)
     assert weekly[:, 0] == pytest.approx([30 * 1000, 30 * 1000 * 0.86, 30 * 1000], rel=0.04)
+
+
+from sim import cat_total
+
+CATS = [{"stat": "PTS", "reverse": False}, {"stat": "FG%", "reverse": False}, {"stat": "TO", "reverse": True},
+        {"stat": "TW", "reverse": False}]
+
+
+def test_cat_season_sums_counting_lines_and_ratio_cats_as_made_over_attempted():
+    s = {**TINY, "slots": {"UTIL": 2, "BE": 0}}
+    b = make_board([(20, "UTIL", "ACTIVE", 1, 0.0), (10, "UTIL", "ACTIVE", 1, 0.0)], s)
+    b[["FGM", "FGA", "TO", "TW"]] = [[8.0, 10.0, 3.0, 0.6], [2.0, 10.0, 1.0, 0.6]]
+    G = np.ones((2, 7), bool)
+    weekly = sim_season([[0, 1]], b, G, np.zeros(7, int), 1, *slot_fit(b, s), np.random.default_rng(0), cats=CATS)
+    assert weekly.shape == (1, 1, 4)
+    assert cat_total(weekly[0, 0]) == pytest.approx([30 * 7, 0.5, 4 * 7, 1.2 * 7])  # FG% = 70 / 140
+
+
+def test_cat_season_noise_is_one_clipped_multiplier_per_game_line():
+    s = {**TINY, "slots": {"UTIL": 1, "BE": 0}}
+    b = make_board([(20, "UTIL", "ACTIVE", 1, 2.0)], s)
+    b[["FGM", "FGA"]] = [[4.0, 10.0]]
+    G = np.ones((1, 300), bool)
+    w = sim_season([[0]], b, G, np.arange(300), 300, *slot_fit(b, s), np.random.default_rng(0), cats=CATS[:2])[0]
+    pts, fga = w[:, 0].real, w[:, 1].imag
+    assert pts.std() > 10 and (pts >= 0).all() and (pts == 0).mean() > 0.2  # cv 2: N(1, 2) clipped at 0
+    assert pts == pytest.approx(2 * fga)                                     # the whole line moves together
+    assert cat_total(w[pts > 0, 1]) == pytest.approx(0.4)
+
+
+def test_cat_season_missing_column_counts_zero_with_a_warning():
+    s = {**TINY, "slots": {"UTIL": 1, "BE": 0}}
+    b = make_board([(20, "UTIL", "ACTIVE", 1, 0.0)], s)
+    with pytest.warns(UserWarning, match="DD"):
+        w = sim_season([[0]], b, np.ones((1, 3), bool), np.zeros(3, int), 1, *slot_fit(b, s),
+                       np.random.default_rng(0), cats=[{"stat": "DD", "reverse": True}])
+    assert cat_total(w).tolist() == [[[0.0]]]
+
+
+def test_regular_season_categories_are_won_lost_and_tied_each():
+    # PTS: A; TO (reverse): A has fewer; FG%: 45/100 both = tie -> A 2.5, B 0.5
+    weekly = np.array([[[100, 10, 45 + 100j]], [[90, 12, 45 + 100j]]])
+    rank, wins = regular_season(weekly, 1, np.array([1, -1, 1]))
+    assert wins.tolist() == [2.5, 0.5] and rank.tolist() == [0, 1]
+
+
+def test_playoff_categories_use_made_over_attempted_of_the_summed_periods():
+    # FG%: A 9/10 + 10/100 = 17%, B 4/10 + 40/100 = 40% (averaging the weeks would say A: 50% vs 40%)
+    weekly = np.array([[[9 + 10j], [10 + 100j]], [[4 + 10j], [40 + 100j]]])
+    assert playoffs([0, 1], weekly, [0, 1], 2, np.array([1])) == 1
+    assert playoffs([0, 1], weekly, [0, 1], 1, np.array([1])) == 1  # 1-period final on week 1: 10% < 40%
+
+
+def test_report_categories_smoke():
+    s = {**TINY, "teams": 4, "format": "categories", "categories": CATS}
+    b = make_board([(40 - 3 * i, "UTIL|BE", "ACTIVE", 1 + i % 4, 0.3) for i in range(12)], s)
+    df = report(s, 2, n_drafts=2, n_seasons=3, b=b, schedule=make_schedule())
+    assert df.p_champion.sum() == pytest.approx(1) and df.p_playoffs.sum() == pytest.approx(2)
+    assert df.avg_wins.sum() == pytest.approx(3 * 2 * len(CATS))  # 3 reg weeks x 2 games x 4 categories
+    assert (df.avg_points > 0).all()                               # first category (PTS) season total

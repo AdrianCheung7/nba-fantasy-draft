@@ -2,7 +2,8 @@
 import numpy as np
 import pandas as pd
 
-from model import value_pg
+import model
+from model import points, value_pg
 
 IR_OK = {"OUT", "INJURY_RESERVE"}
 NON_STARTING = {"BE", "IR"}
@@ -137,7 +138,14 @@ STRATEGIES = {
     "low_variance": lambda c, ctx: c.marginal - 2 * c.sd * np.sqrt(c.gp),
     "playoffs": lambda c, ctx: c.marginal + 2 * c.marginal_po,
     "ir_early": lambda c, ctx: c.marginal * np.where(c.ir_ok & ctx["ir_open"], 1.3, 1.0),
+    # category leagues only: recommend() values players without these categories ("FT" = FT%), then greedy
+    **{f"punt_{p}": lambda c, ctx: c.marginal for p in ("TO_PF", "FT", "3P", "BLK", "AST")},
 }
+
+
+def offered(settings):
+    """Strategy names for this league: the punts only in category leagues."""
+    return [n for n in STRATEGIES if not n.startswith("punt_") or settings.get("format") == "categories"]
 
 
 def recommend(b, ev, mine, taken, settings, strategy="greedy", po_mask=None, k=TOP_K):
@@ -148,6 +156,11 @@ def recommend(b, ev, mine, taken, settings, strategy="greedy", po_mask=None, k=T
     fallback = not cand  # M7: nothing legal (e.g. no IR-eligible left): best available, flagged for the UI
     cand = cand or list(free[:k])
     out = b.loc[cand].copy()
+    if strategy.startswith("punt_") and settings.get("format") == "categories":
+        drop = strategy.split("_")[1:]
+        s = {**settings, "categories": [x for x in settings["categories"] if x["stat"].rstrip("%") not in drop]}
+        # ev = value * avail on game days; ponytail: a player valued exactly 0 loses his game days here
+        ev = (np.asarray(model.value_pg(b, s), float) * b.avail.values)[:, None] * (ev != 0)
     rosters = [mine + [c] for c in cand]
     out["marginal"] = team_value(ev[rosters], fit[rosters], cap) - team_value(ev[mine], fit[mine], cap)
     if po_mask is None:

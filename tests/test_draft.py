@@ -152,6 +152,27 @@ def test_every_strategy_scores():
         assert rec(ROWS, strategy=name).score.notna().all(), name
 
 
+def test_punt_strategies_value_without_their_categories(monkeypatch):
+    import model
+    from draft import offered
+    cats = [{"stat": s, "reverse": s in ("TO", "PF")} for s in ("PTS", "AST", "TO", "PF", "FT%")]
+    s = {**LEAGUE, "format": "categories", "categories": cats}
+    shim = lambda df, st: sum((-1 if c["reverse"] else 1) * df[c["stat"].rstrip("%")] for c in st["categories"])
+    monkeypatch.setattr(model, "value_pg", shim, raising=False)  # P0-B's value_pg: z-scores; plain sums here
+    b = make_board([(10, "G|UTIL|BE", "ACTIVE", 1), (11, "G|UTIL|BE", "ACTIVE", 1)])
+    b[["AST", "TO", "PF", "FT"]] = [[10.0, 4.0, 4.0, -5.0], [0.0, 0.0, 0.0, 0.0]]
+    b["fp_pg"] = shim(b, s)  # 7 vs 11
+    G, _ = day_matrix(b, SCHED)
+
+    def top(strategy):
+        return recommend(b, ev_matrix(b, G), [], set(), s, strategy).index[0]
+
+    assert top("greedy") == 1 and top("punt_AST") == 1 and top("punt_BLK") == 1  # BLK isn't a category here
+    assert top("punt_TO_PF") == 0 and top("punt_FT") == 0  # 15 vs 11, 12 vs 11
+    assert {"punt_TO_PF", "punt_FT", "punt_3P", "punt_BLK", "punt_AST"} <= set(offered(s))
+    assert not any(n.startswith("punt_") for n in offered(LEAGUE))
+
+
 def test_survive():
     b = make_board([(100, "UTIL", "ACTIVE", 1)] + [(10, "UTIL", "ACTIVE", 1)] * 4)
     rng = np.random.default_rng(0)
