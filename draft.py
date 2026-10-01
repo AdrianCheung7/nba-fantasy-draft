@@ -178,6 +178,8 @@ def espn_rank(b):
 # 109 players with ADP < 120. MAE in picks: weight 1.0/noise 0.4 -> 5.1, 0.95/0.4 -> 5.9, 0.9/0.35 -> 7.8,
 # 0.7/0.45 -> 14.5, 0.5/0.45 -> 20.0 (espn_rank alone: 8.3). MISFIT 1.0-3.0 moved MAE < 0.01: eligibility is
 # broad, so it rarely binds. Re-run if ADP drifts from ESPN's list during draft season.
+# Re-checked 2026-09-30 for 16 teams x 11 rounds, STANDARD rank + category-league ADP (60 sims): 1.0/0.4 -> 5.4,
+# 0.95/0.4 -> 5.6, 0.9/0.4 -> 7.4, 0.8/0.45 -> 10.0 (value was points; rank dominates). Constants unchanged.
 RANK_WEIGHT = 0.95  # ADP says ESPN's list (autopick + queues) dominates; keep a little value for sharper owners
 PICK_NOISE = 0.4  # lognormal sigma on the blend: humans reach/slide ~40% of a player's list position
 MISFIT = 2.0  # blend multiplier for a player the team couldn't start in an open starter slot (needs-based drafting)
