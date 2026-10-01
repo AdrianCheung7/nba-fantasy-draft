@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -8,7 +9,7 @@ import fetch
 from fetch import parse_games, parse_players, parse_proj, parse_schedule, save
 
 GAME = {"statSplitTypeId": 5, "statSourceId": 0, "seasonId": 2026, "scoringPeriodId": 7, "proTeamId": 9,
-        "stats": {"0": 30.0, "4": 3.0, "7": 1.0, "13": 11.0, "14": 20.0, "40": 36.0, "43": 1.0}}
+        "stats": {"0": 30.0, "4": 3.0, "7": 1.0, "9": 4.0, "13": 11.0, "14": 20.0, "40": 36.0, "43": 1.0}}
 DNP = {**GAME, "scoringPeriodId": 8, "stats": {}}
 PROJ = {"statSplitTypeId": 0, "statSourceId": 1, "seasonId": 2027, "stats": {"0": 1640.0, "42": 82.0}}
 PLAYER = {"id": 1, "fullName": "Test Guy", "active": True, "proTeamId": 5,
@@ -22,6 +23,7 @@ def test_parse_games_keeps_played_games_only():
     assert len(df) == 1
     r = df.iloc[0]
     assert (r.player_id, r.period, r.PTS, r.OREB, r.EJ, r.FGA, r.TW, r.BLK) == (1, 7, 30.0, 3.0, 1.0, 20.0, 1.0, 0.0)
+    assert r.PF == 4.0  # personal fouls: a reverse category now
     assert r.team_id == 9  # the team he played that game for (a traded player has more than one)
 
 
@@ -37,9 +39,31 @@ def test_parse_players_positions_and_defaults():
     assert b.positions == "C|UTIL" and b.adp == 999.0 and b.injury_status == "ACTIVE" and b.team_id == 0
 
 
+def test_espn_rank_follows_format():
+    pts_only = {**PLAYER, "id": 5, "draftRanksByRankType": {"POINTS": {"rank": 9}}}
+    players = [PLAYER, pts_only, {"id": 6, "active": True, "eligibleSlots": [4]}]
+    cats = parse_players(players, {}, "categories")
+    assert list(cats.espn_rank) == [40, 9, 999]  # STANDARD first, then POINTS, then 999
+    assert list(parse_players(players, {}, "points").espn_rank) == [33, 9, 999]
+    assert list(parse_players(players, {}).espn_rank) == [33, 9, 999]  # default = points
+
+
+def test_player_headers_sort_by_the_rank_the_room_shows():
+    for fmt, want in [("categories", "STANDARD"), ("points", "POINTS")]:
+        f = json.loads(fetch.player_headers(fmt)["x-fantasy-filter"])["players"]
+        assert (f["limit"], f["sortDraftRanks"]["value"]) == (5000, want)
+
+
 def test_parse_proj_per_game():
     r = parse_proj([PLAYER, {"id": 9}], 2027).iloc[0]
     assert (r.player_id, r.gp, r.PTS, r.REB) == (1, 82.0, 20.0, 0.0)
+
+
+def test_parse_proj_leaves_pf_absent():
+    # ESPN's 2027 projection never carries stat 9 (verified live 2026-09-30): no fake 0.0 PF column
+    proj = {**PROJ, "stats": {"0": 1640.0, "9": 82.0, "42": 82.0}}
+    df = parse_proj([{**PLAYER, "stats": [proj]}], 2027)
+    assert "PF" not in df.columns and df.iloc[0].PTS == 20.0
 
 
 def test_parse_proj_keeps_espn_reb():
@@ -69,7 +93,7 @@ def test_save_is_atomic(tmp_path):
 def test_get_requests_full_player_list(monkeypatch):
     # Live ESPN behavior (discovered 2026-09-27): a bare GET on the players endpoint
     # returns only 50 players (its default page size), not "all players" as assumed.
-    # fetch.get must send fetch.PLAYER_HEADERS so player pulls aren't silently truncated.
+    # fetch.get must send fetch.player_headers() so player pulls aren't silently truncated.
     seen = {}
 
     class FakeResp:
@@ -84,6 +108,7 @@ def test_get_requests_full_player_list(monkeypatch):
         return FakeResp()
 
     monkeypatch.setattr(fetch.requests, "get", fake_get)
-    fetch.get(fetch.PLAYERS.format(season=2026), headers=fetch.PLAYER_HEADERS, cookies={"a": "b"})
-    assert seen["headers"] == fetch.PLAYER_HEADERS and seen["cookies"] == {"a": "b"}
-    assert '"limit": 5000' in fetch.PLAYER_HEADERS["x-fantasy-filter"]
+    h = fetch.player_headers("categories")
+    fetch.get(fetch.PLAYERS.format(season=2026), headers=h, cookies={"a": "b"})
+    assert seen["headers"] == h and seen["cookies"] == {"a": "b"}
+    assert '"limit": 5000' in h["x-fantasy-filter"]
