@@ -1,6 +1,7 @@
 """Regression projections for the 2026-27 season.  Run: python model.py [--backtest]"""
 import json
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +25,61 @@ OREB_SHARE = 0.27  # ponytail: league OREB/REB, for ESPN players with no prior-s
 def points(df, scoring):
     d = df.assign(FGMI=df.FGA - df.FGM, FTMI=df.FTA - df.FTM, **{"3PMI": df["3PA"] - df["3PM"]})
     return sum(w * d[k] for k, w in scoring.items())
+
+
+PCT = {"FG%": ("FGM", "FGA"), "FT%": ("FTM", "FTA"), "3P%": ("3PM", "3PA")}
+# ESPN's default points scoring: the cv / blend-weight yardstick for category leagues, which have no `scoring`
+STANDARD_POINTS = {"PTS": 1, "3PM": 1, "FGA": -1, "FGM": 2, "FTA": -1, "FTM": 1, "OREB": 1, "DREB": 1, "AST": 2,
+                   "STL": 4, "BLK": 4, "TO": -2}
+
+
+def cat_z(df, settings):
+    """(per-category z-scores, season value used to rank) for a category league. Counting cats: (x - mean) / sd;
+    % cats: made - league rate * attempted, then z-scored; reverse cats negated. Means, sds and league rates come from
+    the draftable pool: the top teams x rounds by season value (z sum x gp), found from everyone in two refinements.
+    A category whose column is missing (PF before fetch.py collects it) is skipped with a warning."""
+    cats = []
+    for c in settings["categories"]:
+        if all(k in df for k in PCT.get(c["stat"], [c["stat"]])):
+            cats.append(c)
+        else:
+            warnings.warn(f"category {c['stat']} has no data column; skipped until fetch.py collects it")
+    n = settings["teams"] * settings["rounds"]
+    pool = np.ones(len(df), bool)
+    for _ in range(3):
+        z = {}
+        for c in cats:
+            s = c["stat"]
+            if s in PCT:
+                m, a = PCT[s]
+                x = df[m] - df[m][pool].sum() / df[a][pool].sum() * df[a]
+            else:
+                x = df[s]
+            sd = x[pool].std()
+            z[s] = (x - x[pool].mean()) / (sd if sd > 0 else 1) * (-1 if c["reverse"] else 1)
+        z = pd.DataFrame(z, index=df.index)
+        key = z.sum(axis=1) * (df.gp if "gp" in df else 1)
+        pool = key.rank(ascending=False, method="first").values <= n
+    return z, key
+
+
+def cat_value(df, settings):
+    """Per-game value in a category league: the sum of category z-scores, shifted so replacement level is 0."""
+    z, key = cat_z(df, settings)
+    v = z.sum(axis=1)
+    # ponytail: replacement = the best undrafted player (rank teams x rounds + 1 by season value), not the first
+    # non-starter (teams x starters + 1). draft.team_value clamps negative days to 0, so a starter-level baseline
+    # would make every bench pick worth ~0 and leave rounds 8-11 to tie-breaks; this way every draftable player
+    # beats an empty slot (more games = more counting stats), as in points mode. Tune if bench looks overvalued.
+    rep = v.iloc[np.argsort(-key.values, kind="stable")[min(settings["teams"] * settings["rounds"], len(v) - 1)]]
+    return v - rep
+
+
+def value_pg(df, settings):
+    """Per-game value of each row: fantasy points in a points league, category z value in a category league."""
+    if settings.get("format") == "categories":
+        return cat_value(df, settings)
+    return points(df, settings["scoring"])
 
 
 def season_table(games):

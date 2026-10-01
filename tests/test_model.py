@@ -183,3 +183,57 @@ def test_blend_with_no_games_yet_leaves_projection_alone():
     proj = pd.DataFrame({"player_id": [0], "gp": [70.0], "cv": [0.3], **{c: [10.0] for c in STATS + RATES}})
     out = blend(proj, pd.DataFrame(columns=["season", "player_id", "period", *STATS, *RATES]))
     assert out.PTS.dtype == float and out.PTS.tolist() == [10.0]  # fetch.py writes a header-only file before tip-off
+
+
+from model import cat_value, value_pg
+
+CATS = {"format": "categories", "teams": 2, "rounds": 2, "categories": [
+    {"stat": s, "reverse": s in ("PF", "TO")} for s in
+    ("PTS", "BLK", "STL", "AST", "OREB", "DREB", "PF", "TO", "FG%", "FT%", "3P%", "TW")]}
+
+
+def cat_frame(n=8, seed=0):
+    r = np.random.default_rng(seed)
+    d = pd.DataFrame({c: r.uniform(1, 10, n) for c in STATS + RATES + ["PF"]})
+    for m, a, k in (("FGM", "FGA", 2), ("FTM", "FTA", 1.3), ("3PM", "3PA", 2.8)):
+        d[a] = d[m] * k * r.uniform(0.8, 1.2, n)
+    d["TW"] = r.uniform(0.3, 0.7, n)
+    return d.assign(gp=70.0)
+
+
+def test_cat_value_reverse_and_volume_weighted_percentages():
+    d = cat_frame()
+    v = cat_value(d, CATS)
+    worse = d.copy()
+    worse.loc[0, "TO"] += 3  # more turnovers: lower value
+    assert cat_value(worse, CATS)[0] < v[0]
+    hot = d.copy()  # 90% on 10 shots beats 90% on 1 shot
+    hot.loc[0, ["FGM", "FGA"]] = [9, 10]
+    lo = d.copy()
+    lo.loc[0, ["FGM", "FGA"]] = [0.9, 1]
+    assert cat_value(hot, CATS)[0] > cat_value(lo, CATS)[0]
+    neg = d.copy()  # pct impact is relative to the league rate: 10% on 10 shots hurts
+    neg.loc[0, ["FGM", "FGA"]] = [1, 10]
+    assert cat_value(neg, CATS)[0] < cat_value(lo, CATS)[0]
+
+
+def test_cat_value_replacement_player_is_zero():
+    v = cat_value(cat_frame(), CATS)
+    n = CATS["teams"] * CATS["rounds"]
+    top = np.sort(v.values)[::-1]
+    assert top[n] == pytest.approx(0)  # the best undrafted player (equal gp)
+    assert (top[:n] > 0).all()
+
+
+def test_cat_value_skips_missing_pf_with_warning():
+    d = cat_frame().drop(columns="PF")
+    with pytest.warns(UserWarning, match="PF"):
+        v = cat_value(d, CATS)
+    assert v.notna().all()
+
+
+def test_value_pg_dispatches_on_format():
+    d = cat_frame()
+    assert value_pg(d, {"scoring": {"PTS": 1, "TO": -1}}).equals(points(d, {"PTS": 1, "TO": -1}))
+    assert value_pg(d, {"format": "points", "scoring": {"PTS": 1}}).equals(points(d, {"PTS": 1}))
+    assert value_pg(d, CATS).equals(cat_value(d, CATS))
