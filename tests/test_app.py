@@ -201,3 +201,31 @@ def test_category_league_labels_value_and_flags_sim(home):
 def test_points_league_has_no_category_caption(at):
     assert "Pts/game" in at.dataframe[0].value.columns
     assert not any("approximate in category leagues" in c.value for c in at.caption)
+
+
+def test_season_tab_category_mode(at, home, monkeypatch):
+    """H2H categories: per-category table, expected categories, pickups with +Cats / +Value ROS, adds left."""
+    import espn
+    cats = [{"stat": s} for s in ("PTS", "BLK", "STL", "AST", "OREB", "DREB", "FG%", "FT%", "3P%", "TW")] + \
+           [{"stat": "TO", "reverse": True}, {"stat": "PF", "reverse": True}]
+    st_ = json.loads((home / "settings.json").read_text())
+    (home / "settings.json").write_text(json.dumps({**st_, "format": "categories", "categories": cats, "adds_per_week": 4}))
+    ids = pd.read_csv(home / "data" / "projections.csv").player_id.astype(int).tolist()
+    ent = lambda pids, slots: [{"playerId": p, "lineupSlotId": sl} for p, sl in zip(pids, slots)]
+    js = {"teams": [{"id": 13, "name": "Raj", "roster": {"entries": ent(ids[20:34], [5] * 2 + [12] * 10 + [13] * 2)},
+                     "transactionCounter": {"matchupAcquisitionTotals": {"1": 1.0}}},
+                    {"id": 1, "name": "Rivals", "roster": {"entries": ent(ids[40:48], [5] * 8)}}],
+          "settings": {"scheduleSettings": {"matchupPeriodCount": 19, "matchupPeriods": {"1": [1]}}},  # placeholder
+          "schedule": [{"matchupPeriodId": 1, "home": {"teamId": 13, "totalPoints": 0.0},
+                        "away": {"teamId": 1, "totalPoints": 0.0}}]}
+    (home / "espn_auth.json").write_text('{"espn_s2": "x", "SWID": "{y}"}')
+    monkeypatch.setattr(espn, "league", lambda *a, **k: js)
+    from streamlit.testing.v1 import AppTest
+    at2 = AppTest.from_file(str(ROOT / "app.py"), default_timeout=90).run()
+    assert not at2.exception and not at2.error
+    tables = [d.value for d in at2.dataframe]
+    assert list(tables[-2].columns) == ["Cat", "Me", "Opp", "Win %"] and list(tables[-2].Cat) == [c["stat"] for c in cats]
+    assert list(tables[-1].columns) == ["Player", "Pos", "Games left this matchup", "+Cats this matchup", "+Value ROS", "★", "Drop"]
+    assert len(tables[-1]) == 15 and (tables[-1]["Drop"] != "").all()
+    assert any(m.value.startswith("**Expected categories: ") for m in at2.markdown)
+    assert any("Adds left this week: 3 of 4" in c.value for c in at2.caption)

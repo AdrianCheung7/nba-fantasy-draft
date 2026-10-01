@@ -57,7 +57,7 @@ def cat_z(df, settings):
             else:
                 x = df[s]
             sd = x[pool].std()
-            z[s] = (x - x[pool].mean()) / (sd if sd > 0 else 1) * (-1 if c["reverse"] else 1)
+            z[s] = (x - x[pool].mean()) / (sd if sd > 0 else 1) * (-1 if c.get("reverse", False) else 1)
         z = pd.DataFrame(z, index=df.index)
         key = z.sum(axis=1) * (df.gp if "gp" in df else 1)
         pool = key.rank(ascending=False, method="first").values <= n

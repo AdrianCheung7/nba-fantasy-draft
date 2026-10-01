@@ -92,3 +92,85 @@ def test_matchup_projection_win_pct():
     assert matchup_projection(100, 100, 350, 300, 400, 400)["win"] > 0.7
     assert matchup_projection(100, 100, 300, 300, 0, 0)["win"] == 0.5
     assert matchup_projection(100, 90, 300, 300, 0, 0)["win"] == 1.0
+
+
+# ---- category (H2H categories) mode ----
+from season import adds_left, cat_lines, cat_matchup, cat_pickups, cat_scores, so_far_from_scores  # noqa: E402
+
+PTS = [{"stat": "PTS"}]
+
+
+def test_cat_matchup_equal_teams_is_a_coin_flip_per_category():
+    cats = [{"stat": "PTS"}, {"stat": "TO", "reverse": True}, {"stat": "FG%"}]
+    L = {"PTS": (100, 400), "TO": (20, 9), "FGM": (40, 0), "FGA": (90, 0)}
+    df, won = cat_matchup(L, L, {}, {}, cats)
+    assert list(df.columns) == ["cat", "me", "opp", "p_win"] and list(df.cat) == ["PTS", "TO", "FG%"]
+    assert df.p_win.tolist() == pytest.approx([0.5] * 3) and won == pytest.approx(1.5)
+
+
+def test_cat_matchup_reverse_category_lower_wins():
+    L = lambda to: {"PTS": (100, 100), "TO": (to, 9)}
+    cats = [{"stat": "PTS"}, {"stat": "TO", "reverse": True}]
+    df, _ = cat_matchup(L(10), L(20), {}, {}, cats)   # I turn it over half as often
+    assert df.p_win[1] > 0.9 and df.p_win[0] == pytest.approx(0.5)
+    assert cat_matchup(L(20), L(10), {}, {}, cats)[0].p_win[1] < 0.1
+    assert cat_matchup(L(20), L(10), {}, {}, [{"stat": "TO"}])[0].p_win[0] > 0.9  # without reverse, more is better
+
+
+def test_cat_matchup_ratio_uses_made_over_attempted_and_the_score_so_far():
+    cats = [{"stat": "FG%"}]
+    mine = {"FGM": (50, 0), "FGA": (100, 0)}      # 50 made, but only 50 %
+    opp = {"FGM": (40, 0), "FGA": (70, 0)}        # fewer made, 57 %
+    df, _ = cat_matchup(mine, opp, {}, {}, cats)
+    assert df.me[0] == pytest.approx(0.5) and df.opp[0] == pytest.approx(40 / 70) and df.p_win[0] < 0.5
+    df, _ = cat_matchup(mine, opp, {"FGM": 60, "FGA": 100}, {}, cats)   # 60 % head start: 110/200 vs 40/70
+    assert df.me[0] == pytest.approx(0.55) and 0.3 < df.p_win[0] < 0.5
+    assert cat_matchup({}, {}, {}, {}, cats)[0].p_win[0] == 0.5     # nothing played or projected: a tie
+
+
+def test_cat_matchup_so_far_counts():
+    df, won = cat_matchup({"PTS": (50, 0)}, {"PTS": (100, 0)}, {"PTS": 60}, {"PTS": 0}, PTS)
+    assert (df.me[0], df.opp[0], df.p_win[0]) == (110, 100, 1.0) and won == 1.0
+
+
+def test_cat_lines_starters_injuries_and_variance(world):
+    b, ev, G = world
+    fit, cap = slot_fit(b, S)
+    evw = week_ev(b, ev + 1, WK)                      # +1: every player "plays"
+    scale = (b.avail * b.injury_status.map({"DAY_TO_DAY": 0.5}).fillna(1.0)).values
+    mean, var = cat_lines(b, evw, fit, cap, [0, 1, 2], scale, PTS)["PTS"]
+    assert mean == 100 and var == pytest.approx(2 * (9 ** 2 + 6 ** 2))  # cv .3 x PTS, two starters, two days
+    assert cat_lines(b, evw, fit, cap, [7], scale, PTS)["PTS"][0] == 50   # day-to-day: half of 50 x 2 days
+
+
+def test_cat_pickups_rank_by_expected_categories_then_season_value(world):
+    b, ev, G = world
+    p = cat_pickups(b, b.PTS, G, mine=[0, 1, 2, 3], active=[0, 1, 2], free=[4, 5, 6, 7], wk=WK, ros=ROS,
+                    settings={**S, "categories": PTS}, opp_lines={"PTS": (100, 100)}, so_me={}, so_opp={})
+    assert (p["drop"] == "P2").all()                          # never P3, who sits in the IR slot
+    assert list(p.index) == [4, 7, 6, 5]                      # X and W both add this week (W's 50 is more volatile, hurt by DTD)
+    assert p.loc[4].cat_gain >= p.loc[7].cat_gain > 0 and list(p.cat_gain) == sorted(p.cat_gain, reverse=True)
+    assert p.loc[6].cat_gain == 0 and p.loc[6].star and not p.loc[5].star
+    assert (p.loc[7].ros_gain, p.loc[4].ros_gain, p.loc[6].ros_gain) == (120, 20, 80)
+    assert p.loc[7].games == 1 and p.loc[6].games == 0
+
+
+def test_cat_scores_and_so_far_from_espn_scoreboard():
+    side = lambda t, by: {"teamId": t, "totalPoints": 0.0, "cumulativeScore": {"scoreByStat": by}}
+    js = {"schedule": [{"matchupPeriodId": 2, "home": side(13, {"0": {"score": 90.0}, "19": {"score": 0.45}}),
+                        "away": side(5, {"0": {"score": 80.0}})}]}
+    sc = cat_scores(js, 2, 13)
+    assert sc["me"] == {"PTS": 90.0, "FG%": 0.45} and sc["opp"] == {"PTS": 80.0} and sc["opp_id"] == 5
+    assert cat_scores(js, 3, 13) is None
+    pre = {"schedule": [{"matchupPeriodId": 1, "home": {"teamId": 13, "totalPoints": 0.0},
+                         "away": {"teamId": 5, "totalPoints": 0.0}}]}
+    assert cat_scores(pre, 1, 13)["me"] == {}                    # pre-season: no per-category data
+    sf = so_far_from_scores(sc["me"], {"FGA": (60, 0)}, [{"stat": "PTS"}, {"stat": "FG%"}], 0.5)
+    assert sf == {"PTS": 90.0, "FGA": 30.0, "FGM": pytest.approx(13.5)}   # % turned back into made/attempted
+
+
+def test_adds_left():
+    js = {"teams": [{"id": 13, "transactionCounter": {"matchupAcquisitionTotals": {"3": 1.0}}},
+                    {"id": 2, "transactionCounter": {}}]}
+    assert adds_left(js, 13, 3, 4) == 3 and adds_left(js, 13, 4, 4) == 4 and adds_left(js, 2, 3, 4) == 4
+    assert adds_left(js, 99, 3, 4) is None
