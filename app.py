@@ -86,7 +86,10 @@ with st.sidebar:
     default = s.get("strategy", "greedy")
     if sim is not None:
         if sim.get("league") == {k: s.get(k) for k in LEAGUE_KEYS}:
-            default = sim["best"]
+            if sim["best"].startswith("punt_") and default != sim["best"]:  # a punt is the user's call, never silent
+                st.caption(f"Simulation favours **{sim['best']}** - pick it below to use it.")
+            else:
+                default = sim["best"]
         else:  # M10: league settings changed since this simulation ran; don't trust it
             st.caption("Strategy results are for different league settings - rerun.")
             sim = None

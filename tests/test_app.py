@@ -232,3 +232,18 @@ def test_season_tab_category_mode(at, home, monkeypatch):
     assert len(tables[-1]) == 15 and (tables[-1]["Drop"] != "").all()
     assert any(m.value.startswith("**Expected categories: ") for m in at2.markdown)
     assert any("Adds left this week: 3 of 4" in c.value for c in at2.caption)
+
+
+def test_sim_favouring_a_punt_is_suggested_not_selected(home):
+    from sim import LEAGUE_KEYS
+    s = json.loads((home / "settings.json").read_text())
+    s = {**{k: v for k, v in s.items() if k != "scoring"}, "format": "categories", "categories": CATS, "teams": 16,
+         "rounds": 11, "my_slot": 8, "strategy": "greedy"}
+    (home / "settings.json").write_text(json.dumps(s))
+    (home / "data" / "strategy_slot8.json").write_text(json.dumps(
+        {"best": "punt_AST", "table": [], "league": {k: s.get(k) for k in LEAGUE_KEYS}}))
+    from streamlit.testing.v1 import AppTest
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60).run()
+    assert not at.exception
+    assert any("favours **punt_AST**" in c.value for c in at.caption)
+    assert json.loads((home / "settings.json").read_text())["strategy"] == "greedy"
