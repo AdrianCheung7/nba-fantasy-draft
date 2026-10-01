@@ -3,6 +3,7 @@ Run: python sim.py --slot 5 [--drafts 20 --seasons 20]           best strategy p
      python sim.py --report --slot 9 [--drafts 20 --seasons 20]  our best strategy vs 13 near-optimal teams"""
 import argparse
 import json
+import warnings
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from pathlib import Path
@@ -20,7 +21,38 @@ DATA = ROOT / "data"
 # 0.02 -> 0.285, 0.01 -> 0.188. Re-calibrate if league size or projections change a lot.
 NOISE = 0.03
 OPPONENTS = ("greedy", "espn")
-LEAGUE_KEYS = ("teams", "rounds", "slots", "scoring", "playoff_teams", "playoff_weeks", "playoff_round_periods")
+LEAGUE_KEYS = ("teams", "rounds", "slots", "scoring", "categories", "playoff_teams", "playoff_weeks",
+               "playoff_round_periods")
+RATIO = {"FG%": ("FGM", "FGA"), "FT%": ("FTM", "FTA"), "3P%": ("3PM", "3PA")}
+
+
+def cat_lines(b, cats):
+    """Per-game line (players, cats), complex: the count (or made) + 1j * attempts for ratio cats, so lines summed
+    over games and periods still give FG% etc. exactly as made / attempted of the sums (cat_total)."""
+    def col(s):
+        if s in b:
+            return b[s].values.astype(float)
+        warnings.warn(f"no {s} column in the projections: counted as 0")
+        return np.zeros(len(b))
+    return np.stack([col(RATIO[c["stat"]][0]) + 1j * col(RATIO[c["stat"]][1]) if c["stat"] in RATIO
+                     else col(c["stat"]) + 0j for c in cats], axis=1)
+
+
+def cat_total(x):
+    """Totals of summed lines: ratio cats made / attempted (0 attempts -> 0), the rest (and points) as is."""
+    return np.where(x.imag > 0, x.real / np.where(x.imag > 0, x.imag, 1), x.real)
+
+
+def h2h(pa, pc, sgn=1):
+    """A's categories won + half the ties vs C (a points league is one 'category'); sgn -1 = lower wins."""
+    s = np.sign(pa - pc) * sgn
+    return np.sum((s > 0) + 0.5 * (s == 0))
+
+
+def points_for(weekly, n_reg):
+    """Regular-season points-for, the standings tiebreak; category leagues: the first category's total."""
+    t = cat_total(weekly[:, :n_reg].sum(axis=1))
+    return t if t.ndim == 1 else t[:, 0]
 
 
 def round_robin(n):
@@ -42,22 +74,25 @@ def bracket_order(size):
     return order
 
 
-def regular_season(weekly, n_reg):
+def regular_season(weekly, n_reg, sgn=1):
+    """H2H record. weekly: points (teams, periods), or category lines (teams, periods, cats; see cat_lines) where
+    each category is a W/L/T, as ESPN's H2H each-category; standings by win % (= wins, same games for all)."""
+    tot = cat_total(weekly)
     wins = np.zeros(weekly.shape[0])
     rr = round_robin(weekly.shape[0])
     for w in range(n_reg):
         for a, c in rr[w % len(rr)]:
             if a < 0 or c < 0:
                 continue
-            pa, pc = weekly[a, w], weekly[c, w]
-            wins[a] += (pa > pc) + 0.5 * (pa == pc)
-            wins[c] += (pc > pa) + 0.5 * (pa == pc)
-    return np.lexsort((-weekly[:, :n_reg].sum(axis=1), -wins)), wins  # wins, then points-for
+            x = h2h(tot[a, w], tot[c, w], sgn)
+            wins[a] += x
+            wins[c] += np.size(tot[a, w]) - x
+    return np.lexsort((-points_for(weekly, n_reg), -wins)), wins  # wins, then points-for
 
 
-def playoffs(seeds, weekly, weeks, round_periods=1):
+def playoffs(seeds, weekly, weeks, round_periods=1, sgn=1):
     """Seeded single elimination; top seeds get byes; each round sums `round_periods` matchup periods and the
-    rounds use the last periods of `weeks`."""
+    rounds use the last periods of `weeks`. Categories: more categories won over the summed periods advances."""
     size = 1 << (len(seeds) - 1).bit_length()
     rounds = size.bit_length() - 1
     need = rounds * round_periods
@@ -66,8 +101,8 @@ def playoffs(seeds, weekly, weeks, round_periods=1):
     alive = [seeds[s - 1] if s <= len(seeds) else -1 for s in bracket_order(size)]
     use = list(weeks[len(weeks) - need:])
     for r in range(rounds):
-        pts = weekly[:, use[r * round_periods:(r + 1) * round_periods]].sum(axis=1)
-        alive = [c if a < 0 else a if c < 0 else (a if pts[a] >= pts[c] else c)
+        pts = cat_total(weekly[:, use[r * round_periods:(r + 1) * round_periods]].sum(axis=1))
+        alive = [c if a < 0 else a if c < 0 else (a if 2 * h2h(pts[a], pts[c], sgn) >= np.size(pts[a]) else c)
                  for a, c in zip(alive[::2], alive[1::2])]
     return alive[0]
 
@@ -127,20 +162,31 @@ def availability(G, avail, rng, k=None, b2b=None, pen=None):
     return plays if b2b is None else plays & ~(b2b & (rng.random(G.shape) < pen[:, None]))
 
 
-def sim_season(rosters, b, G, period, n_periods, fit, cap, rng, b2b=None):
+def sim_season(rosters, b, G, period, n_periods, fit, cap, rng, b2b=None, cats=None):
     """Fantasy points (teams, matchup periods); daily lineup = draft.lineup on expected points of who plays.
-    b2b: (players, days) 2nd-night flags; rotation veterans (MIN > 22) rest there, more with age."""
+    b2b: (players, days) 2nd-night flags; rotation veterans (MIN > 22) rest there, more with age.
+    cats (settings["categories"]): summed category lines (teams, periods, cats) instead, see cat_lines/cat_total;
+    each started game's whole line is scaled by one draw ~ N(1, cv) clipped at 0 (good games are good at all)."""
     fp, sd, avail = b.fp_pg.values, b.sd.values, b.avail.values
     k = b.gp_k.values if "gp_k" in b else None  # projections.csv from before model.py fitted it: plain binomial
     pen = np.where(b.MIN.values > 22, np.clip(0.012 * (np.nan_to_num(b.age.values, nan=24) - 24), 0, 0.14), 0)
-    weekly = np.zeros((len(rosters), n_periods))
+    if cats is None:
+        weekly = np.zeros((len(rosters), n_periods))
+    else:
+        lines, cv = cat_lines(b, cats), b.cv.values
+        weekly = np.zeros((len(rosters), n_periods, len(cats)), complex)
     for t, r in enumerate(rosters):
         r = np.asarray(r, int)
         plays = availability(G[r], avail[r], rng, k[r] if k is not None else None,
                              None if b2b is None else b2b[r], pen[r])
-        start = lineup(np.where(plays, fp[r, None], 0.0), fit[r], cap)
-        real = np.where(start, rng.normal(fp[r, None], sd[r, None], plays.shape), 0.0)
-        np.add.at(weekly[t], period, real.sum(axis=0))
+        if cats is None:
+            start = lineup(np.where(plays, fp[r, None], 0.0), fit[r], cap)
+            real = np.where(start, rng.normal(fp[r, None], sd[r, None], plays.shape), 0.0)
+            np.add.at(weekly[t], period, real.sum(axis=0))
+        else:  # shifted > 0: below-replacement players still start when nobody better plays (same order)
+            start = lineup(np.where(plays, fp[r, None] - fp[r].min() + 1, 0.0), fit[r], cap)
+            mult = np.where(start, np.clip(rng.normal(1, cv[r, None], plays.shape), 0, None), 0.0)
+            np.add.at(weekly[t], period, mult.T @ lines[r])
     return weekly
 
 
@@ -195,18 +241,22 @@ def prep(settings, b=None, schedule=None, matchups=None, draftable=True):
 
 
 def season_stats(rosters, c, settings, rng, n_seasons):
-    """Per team, summed over seasons: [champion, playoffs, bottom 3, wins, regular-season points]."""
+    """Per team, summed over seasons: [champion, playoffs, bottom 3, wins, regular-season points]. Category leagues:
+    wins = categories won (+ half ties), points = the first category's total."""
     teams, p, rp = len(rosters), settings["playoff_teams"], settings.get("playoff_round_periods", 1)
+    cats = settings["categories"] if settings.get("format") == "categories" else None
+    sgn = 1 if cats is None else np.array([-1 if x.get("reverse") else 1 for x in cats])
     m = np.zeros((teams, 5))
     for _ in range(n_seasons):
-        weekly = sim_season(rosters, c["b"], c["G"], c["period"], c["n_periods"], c["fit"], c["cap"], rng, c["b2b"])
-        rank, wins = regular_season(weekly, c["n_reg"])
+        weekly = sim_season(rosters, c["b"], c["G"], c["period"], c["n_periods"], c["fit"], c["cap"], rng, c["b2b"],
+                            cats)
+        rank, wins = regular_season(weekly, c["n_reg"], sgn)
         place = np.argsort(rank)
-        m[playoffs(list(rank[:p]), weekly, c["po"], rp), 0] += 1
+        m[playoffs(list(rank[:p]), weekly, c["po"], rp, sgn), 0] += 1
         m[:, 1] += place < p
         m[:, 2] += place >= teams - 3
         m[:, 3] += wins
-        m[:, 4] += weekly[:, :c["n_reg"]].sum(axis=1)
+        m[:, 4] += points_for(weekly, c["n_reg"])
     return m
 
 
