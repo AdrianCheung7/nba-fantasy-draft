@@ -8,44 +8,76 @@
     2025,
     2026
   ],
-  "teams": 14,
-  "my_slot": 9,
-  "rounds": 12,
+  "teams": 16,
+  "my_slot": 8,
+  "rounds": 11,
   "strategy": "greedy",
   "slots": {
     "G": 2,
     "F": 1,
-    "SG/SF": 1,
+    "SG/SF": 2,
     "PF/C": 1,
     "UTIL": 1,
-    "BE": 6,
+    "BE": 4,
     "IR": 2
-  },
-  "scoring": {
-    "PTS": 1.0,
-    "BLK": 2.0,
-    "STL": 2.0,
-    "AST": 1.0,
-    "OREB": 1.5,
-    "DREB": 1.0,
-    "EJ": -100.0,
-    "FF": -2.0,
-    "TF": -3.0,
-    "TO": -1.0,
-    "FGM": 0.5,
-    "FTM": 1.0,
-    "3PM": 2.0,
-    "FGMI": -0.5,
-    "FTMI": -1.0,
-    "3PMI": -1.0,
-    "TD": 10.0,
-    "QD": 100.0,
-    "TW": 1.0
   },
   "playoff_teams": 4,
   "playoff_weeks": 4,
   "playoff_round_periods": 2,
   "espn_team_id": 13,
   "my_team_name": "Raj",
-  "adds_per_day": 2
+  "format": "categories",
+  "categories": [
+    {
+      "stat": "FT%",
+      "reverse": false
+    },
+    {
+      "stat": "OREB",
+      "reverse": false
+    },
+    {
+      "stat": "3P%",
+      "reverse": false
+    },
+    {
+      "stat": "DREB",
+      "reverse": false
+    },
+    {
+      "stat": "TW",
+      "reverse": false
+    },
+    {
+      "stat": "PF",
+      "reverse": true
+    },
+    {
+      "stat": "PTS",
+      "reverse": false
+    },
+    {
+      "stat": "BLK",
+      "reverse": false
+    },
+    {
+      "stat": "STL",
+      "reverse": false
+    },
+    {
+      "stat": "TO",
+      "reverse": true
+    },
+    {
+      "stat": "AST",
+      "reverse": false
+    },
+    {
+      "stat": "FG%",
+      "reverse": false
+    }
+  ],
+  "adds_per_week": 4,
+  "pick_seconds": 60,
+  "draft_time": "2026-09-30T20:30"
 }
