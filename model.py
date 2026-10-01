@@ -56,7 +56,10 @@ def cat_z(df, settings):
                 x = df[m] - df[m][pool].sum() / df[a][pool].sum() * df[a]
             else:
                 x = df[s]
-            sd = x[pool].std()
+            # G-score (Rosenof 2024, H2H each category): game-to-game noise (sdw_<cat>, from build) joins the
+            # spread between players, so noisy cats (TW, %) count less; plain z-score without the column
+            w = np.nan_to_num(df[f"sdw_{s}"].iloc[0]) if f"sdw_{s}" in df else 0.0
+            sd = np.sqrt(x[pool].var() + w ** 2)
             z[s] = (x - x[pool].mean()) / (sd if sd > 0 else 1) * (-1 if c["reverse"] else 1)
         z = pd.DataFrame(z, index=df.index)
         key = z.sum(axis=1) * (df.gp if "gp" in df else 1)
@@ -233,6 +236,17 @@ INJURY_GP = {"OUT": 0.75, "INJURY_RESERVE": 0.5, "SUSPENSION": 0.9}  # ponytail:
 OUT_COLS = ["player_id", "name", "team_id", "positions", "adp", "espn_rank", "injury_status", "age", "gp", "gp_k", "cv", *STATS, *RATES]
 
 
+def within_sd(games, target, n=200):
+    """Per category stat: the average game-to-game sd over the last 2 seasons of players with 15+ games, the n with the
+    most minutes per game (a stand-in for the draftable pool). % cats on per-game made - league rate * attempted."""
+    g = games[games.season >= target - 2]
+    g = g.assign(**{k: g[m] - g[m].sum() / g[a].sum() * g[a] for k, (m, a) in PCT.items()})
+    s = g.groupby("player_id")
+    size = s.size()
+    top = s.MIN.mean()[size >= 15].nlargest(n).index
+    return s[[c for c in STATS + RATES + list(PCT) if c in g]].std().loc[top].mean()
+
+
 def fp_cv(games, scoring, target):
     g = games[games.season >= target - 2]
     g = g.assign(fp=points(g, scoring))
@@ -271,7 +285,7 @@ def build(games, players, espn_proj, ages, settings, espn_hist=None):
         out["espn_rank"] = 999
     out["gp"] = out.gp * out.injury_status.map(INJURY_GP).fillna(1.0)
     out["gp_k"] = kappa  # sim.availability: how clumped availability is around gp / 82
-    return out[OUT_COLS]
+    return out[OUT_COLS].assign(**{f"sdw_{k}": v for k, v in within_sd(games, season).items()})
 
 
 def blend(proj, cur_games, k=20):

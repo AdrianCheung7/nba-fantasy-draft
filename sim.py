@@ -20,7 +20,8 @@ DATA = ROOT / "data"
 # 0.02 -> 0.285, 0.01 -> 0.188. Re-calibrate if league size or projections change a lot.
 NOISE = 0.03
 OPPONENTS = ("greedy", "espn")
-LEAGUE_KEYS = ("teams", "rounds", "slots", "scoring", "playoff_teams", "playoff_weeks", "playoff_round_periods")
+LEAGUE_KEYS = ("teams", "rounds", "slots", "scoring", "format", "categories", "playoff_teams", "playoff_weeks",
+               "playoff_round_periods")
 
 
 def round_robin(n):

@@ -72,7 +72,8 @@ def test_build_rookie_fallback_and_injury_scaling():
                          {"player_id": 1, "gp": 10.0, **{c: 99.0 for c in STATS}, **{c: 0.0 for c in RATES}, "REB": 8.0}])
     settings = {"season": 2027, "history_seasons": [2022, 2023, 2024, 2025, 2026], "scoring": SCORING}
     proj = build(games, players, espn, {0: 25, 1: 30}, settings).set_index("player_id")
-    assert list(proj.reset_index().columns) == COLS
+    assert list(proj.reset_index().columns)[:len(COLS)] == COLS
+    assert {"sdw_PTS", "sdw_TW", "sdw_FG%"} <= set(proj.columns) and proj.sdw_PTS.nunique() == 1  # G-score noise
     assert set(proj.index) == {0, 1, 999}
     # rookie's ESPN gp is scaled by the model/ESPN gp ratio for player 1, the only veteran in both frames
     # (player 1 is ACTIVE, so its own gp is untouched by injury scaling and reflects the ratio directly)
@@ -250,6 +251,25 @@ def test_build_category_league_has_no_scoring_key():
     cat = build(games, players, espn, {0: 25, 1: 30}, {**base, **CATS})
     pts = build(games, players, espn, {0: 25, 1: 30}, {**base, "scoring": STANDARD_POINTS})
     pd.testing.assert_frame_equal(cat, pts)  # cv: points-league cv on ESPN's standard scoring
+
+
+def test_within_sd_per_category_from_game_logs():
+    from model import within_sd
+    g = fake_games(n_players=4, games=20).assign(TW=lambda d: (d.period % 2).astype(float))  # TW alternates 0/1
+    g.loc[g.period % 2 == 0, "PTS"] += 4  # PTS swings +-2 around each player's mean
+    w = within_sd(g, 2027)
+    assert w["TW"] == pytest.approx(np.std([0, 1] * 20, ddof=1))
+    assert w["PTS"] == pytest.approx(np.std([0, 4] * 20, ddof=1))
+    assert w["FG%"] == pytest.approx(0)  # every game at the player's (= league) rate
+    assert w["STL"] == 0
+
+
+def test_g_score_shrinks_noisy_categories():
+    d = cat_frame()
+    z = cat_value(d, CATS)
+    noisy = d.assign(sdw_TW=100.0)  # TW so noisy game to game that player differences barely matter
+    no_tw = cat_value(d, {**CATS, "categories": [c for c in CATS["categories"] if c["stat"] != "TW"]})
+    assert np.allclose(cat_value(noisy, CATS), no_tw, atol=0.05) and not np.allclose(z, no_tw, atol=0.05)
 
 
 def test_pf_is_a_shrunk_history_rate_and_optional():
