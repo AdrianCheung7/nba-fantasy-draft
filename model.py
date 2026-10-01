@@ -1,6 +1,7 @@
 """Regression projections for the 2026-27 season.  Run: python model.py [--backtest]"""
 import json
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +13,8 @@ from sklearn.preprocessing import StandardScaler
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
 STATS = ["PTS", "FGM", "FGA", "FTM", "FTA", "3PM", "3PA", "OREB", "DREB", "AST", "STL", "BLK", "TO", "MIN"]
-RATES = ["EJ", "FF", "TF", "TD", "QD", "TW"]  # rare or team-driven: shrunk rates, not regression
+RATES = ["EJ", "FF", "TF", "TD", "QD", "TW", "PF"]  # rare or team-driven: shrunk rates, not regression
+# ponytail: PF too, since ESPN never projects it; a role change (more minutes) is missed, regress it if PF matters
 FEATURES = [f"{c}_{k}" for c in STATS + ["GP"] for k in (1, 2, 3)] + ["age"]
 GP_FEATURES = [f"{c}_{k}" for c in ("GP", "MIN") for k in (1, 2, 3)] + ["age", "age2"]  # games played: lean beats FEATURES
 SHRINK_K = 40  # ponytail: prior strength in weighted games; tune if rates look too flat/noisy
@@ -24,6 +26,61 @@ OREB_SHARE = 0.27  # ponytail: league OREB/REB, for ESPN players with no prior-s
 def points(df, scoring):
     d = df.assign(FGMI=df.FGA - df.FGM, FTMI=df.FTA - df.FTM, **{"3PMI": df["3PA"] - df["3PM"]})
     return sum(w * d[k] for k, w in scoring.items())
+
+
+PCT = {"FG%": ("FGM", "FGA"), "FT%": ("FTM", "FTA"), "3P%": ("3PM", "3PA")}
+# ESPN's default points scoring: the cv / blend-weight yardstick for category leagues, which have no `scoring`
+STANDARD_POINTS = {"PTS": 1, "3PM": 1, "FGA": -1, "FGM": 2, "FTA": -1, "FTM": 1, "OREB": 1, "DREB": 1, "AST": 2,
+                   "STL": 4, "BLK": 4, "TO": -2}
+
+
+def cat_z(df, settings):
+    """(per-category z-scores, season value used to rank) for a category league. Counting cats: (x - mean) / sd;
+    % cats: made - league rate * attempted, then z-scored; reverse cats negated. Means, sds and league rates come from
+    the draftable pool: the top teams x rounds by season value (z sum x gp), found from everyone in two refinements.
+    A category whose column is missing (PF before fetch.py collects it) is skipped with a warning."""
+    cats = []
+    for c in settings["categories"]:
+        if all(k in df and df[k].notna().any() for k in PCT.get(c["stat"], [c["stat"]])):
+            cats.append(c)
+        else:
+            warnings.warn(f"category {c['stat']} has no data column; skipped until fetch.py collects it")
+    n = settings["teams"] * settings["rounds"]
+    pool = np.ones(len(df), bool)
+    for _ in range(3):
+        z = {}
+        for c in cats:
+            s = c["stat"]
+            if s in PCT:
+                m, a = PCT[s]
+                x = df[m] - df[m][pool].sum() / df[a][pool].sum() * df[a]
+            else:
+                x = df[s]
+            sd = x[pool].std()
+            z[s] = (x - x[pool].mean()) / (sd if sd > 0 else 1) * (-1 if c["reverse"] else 1)
+        z = pd.DataFrame(z, index=df.index)
+        key = z.sum(axis=1) * (df.gp if "gp" in df else 1)
+        pool = key.rank(ascending=False, method="first").values <= n
+    return z, key
+
+
+def cat_value(df, settings):
+    """Per-game value in a category league: the sum of category z-scores, shifted so replacement level is 0."""
+    z, key = cat_z(df, settings)
+    v = z.sum(axis=1)
+    # ponytail: replacement = the best undrafted player (rank teams x rounds + 1 by season value), not the first
+    # non-starter (teams x starters + 1). draft.team_value clamps negative days to 0, so a starter-level baseline
+    # would make every bench pick worth ~0 and leave rounds 8-11 to tie-breaks; this way every draftable player
+    # beats an empty slot (more games = more counting stats), as in points mode. Tune if bench looks overvalued.
+    rep = v.iloc[np.argsort(-key.values, kind="stable")[min(settings["teams"] * settings["rounds"], len(v) - 1)]]
+    return v - rep
+
+
+def value_pg(df, settings):
+    """Per-game value of each row: fantasy points in a points league, category z value in a category league."""
+    if settings.get("format") == "categories":
+        return cat_value(df, settings)
+    return points(df, settings["scoring"])
 
 
 def season_table(games):
@@ -186,11 +243,13 @@ def fp_cv(games, scoring, target):
 
 def build(games, players, espn_proj, ages, settings, espn_hist=None):
     season = settings["season"]
+    games = games if "PF" in games else games.assign(PF=np.nan)  # fetched before PF: an all-NaN column
     tab = season_table(games)
     seasons = set(tab.season)
     stat_m, gp_m, kappa = fit(tab, ages, [s for s in settings["history_seasons"] if s - 1 in seasons], season)
     espn_proj = espn_split(espn_proj, tab, season - 1)
-    w = pick_weight(tab, ages, espn_hist or {}, settings["scoring"], season)
+    sc = settings.get("scoring", STANDARD_POINTS)  # category leagues: cv on a points yardstick (relative spread)
+    w = pick_weight(tab, ages, espn_hist or {}, sc, season)
     proj = blend_espn(predict(stat_m, gp_m, tab, ages, season, season), espn_proj, w)
     rookies = espn_proj[~espn_proj.player_id.isin(proj.player_id)][["player_id", "gp", *STATS]].copy()
     # ESPN's own gp projections run ~20% higher than the model's for players in both frames (F2): scale
@@ -202,7 +261,7 @@ def build(games, players, espn_proj, ages, settings, espn_hist=None):
     proj = pd.concat([proj, rookies], ignore_index=True)
     proj = proj.merge(shrunk_rates(games, season), on="player_id", how="left")
     proj[RATES] = proj[RATES].fillna(games[RATES].mean())
-    cv = fp_cv(games, settings["scoring"], season)
+    cv = fp_cv(games, sc, season)
     proj = proj.merge(cv, on="player_id", how="left")
     proj["cv"] = proj.cv.fillna(cv.cv.median())
     out = players.merge(proj, on="player_id")
@@ -219,7 +278,7 @@ def blend(proj, cur_games, k=20):
     """D9: per-game rates = w * this season's + (1 - w) * projected, w = n / (n + k), n = games played."""
     if cur_games.empty:  # fetch.py writes a header-only file before the season starts
         return proj
-    cols = STATS + RATES
+    cols = [c for c in STATS + RATES if c in cur_games]
     g = cur_games.groupby("player_id")
     n = g.size().reindex(proj.player_id).fillna(0).values[:, None]
     cur = g[cols].mean().reindex(proj.player_id).values
@@ -232,7 +291,7 @@ def blend(proj, cur_games, k=20):
 def backtest(games, ages, settings, hist):
     """Per test season: FP/g MAE of each stage (all players with 20+ games, and the top 150 by projected season FP)
     vs 'repeat last season'. hist = {season: ESPN preseason projection}. attrs['w'] = the ESPN blend weight."""
-    tab, sc, season = season_table(games), settings["scoring"], settings["season"]
+    tab, sc, season = season_table(games), settings.get("scoring", STANDARD_POINTS), settings["season"]
     w = pick_weight(tab, ages, hist, sc, season)
     rows = []
     for t in sorted(hist):
@@ -274,7 +333,7 @@ def main():
     if cur.exists():
         proj = blend(proj, pd.read_csv(cur))
     proj.to_csv(DATA / "projections.csv", index=False)
-    top = proj.assign(fp=points(proj, s["scoring"])).nlargest(15, "fp")
+    top = proj.assign(fp=value_pg(proj, s)).nlargest(15, "fp")
     print(top[["name", "positions", "gp", "fp"]].to_string(index=False))
 
 

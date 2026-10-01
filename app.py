@@ -51,6 +51,8 @@ if missing:
     st.stop()
 
 s = json.loads(SETTINGS.read_text())
+CATS = s.get("format") == "categories"
+PER_GAME = "Value/g" if CATS else "Pts/game"  # category value: summed z-scores per game
 
 with st.sidebar:
     s["teams"] = st.selectbox("Teams", list(range(8, 21)), index=min(max(s["teams"], 8), 20) - 8, key="teams")
@@ -67,9 +69,10 @@ with st.sidebar:
         st.caption("Roster slots")
         slots = {n: st.number_input(n, 0, 15, s["slots"].get(n, 0), key=f"slot_{n}") for n in SLOT_NAMES.values()}
         s["slots"] = {n: v for n, v in slots.items() if v}
-        st.caption("Scoring")
-        s["scoring"] = {k: st.number_input(k, value=float(v), step=0.5, key=f"sc_{k}")
-                        for k, v in s["scoring"].items()}
+        if "scoring" in s:  # category leagues have no point weights
+            st.caption("Scoring")
+            s["scoring"] = {k: st.number_input(k, value=float(v), step=0.5, key=f"sc_{k}")
+                            for k, v in s["scoring"].items()}
         st.caption("Playoffs")
         s["playoff_teams"] = st.number_input("Playoff teams", 2, s["teams"], min(s["playoff_teams"], s["teams"]),
                                              key="po_teams")
@@ -101,6 +104,8 @@ with st.sidebar:
     with st.expander("Strategy"):
         s["strategy"] = st.selectbox("Strategy", strat_names,
                                      index=strat_names.index(default) if default in strat_names else 0, key="strategy")
+        if CATS:
+            st.caption("Simulated odds are approximate in category leagues until the category H2H sim lands.")
         if st.button("Save settings + run strategy simulation (~4 min)", key="simulate"):
             SETTINGS.write_text(json.dumps(s, indent=2))  # sim.py reads settings.json
             with st.spinner("Simulating drafts and seasons..."):
@@ -245,7 +250,7 @@ with draft_tab:
         st.dataframe(pd.DataFrame({
             "Player": rec["name"] + b.loc[rec.index, "injury_status"].map(lambda x: "" if x == "ACTIVE" else f" ({x})"),
             "Pos": rec.pos,
-            "Pts/game": rec.fp_pg.round(1),
+            PER_GAME: rec.fp_pg.round(1),
             "Games": rec.games.round(0),
             "Value": rec.value.round(0),
             "% still there": (rec.p_back * 100).round(0),
@@ -259,7 +264,7 @@ with draft_tab:
     left.subheader("My roster")
     roster = pd.DataFrame(adv["roster"], columns=["name", "pos", "fp_pg", "games"]).astype({"fp_pg": float, "games": float})
     left.dataframe(roster.round({"fp_pg": 1, "games": 0}).rename(
-        columns={"name": "Player", "pos": "Pos", "fp_pg": "Pts/game", "games": "Games"}), hide_index=True)
+        columns={"name": "Player", "pos": "Pos", "fp_pg": PER_GAME, "games": "Games"}), hide_index=True)
     if adv["needs"]:
         left.caption("Still needed: " + ", ".join(adv["needs"]))
     right.subheader("Pick log")

@@ -183,3 +183,84 @@ def test_blend_with_no_games_yet_leaves_projection_alone():
     proj = pd.DataFrame({"player_id": [0], "gp": [70.0], "cv": [0.3], **{c: [10.0] for c in STATS + RATES}})
     out = blend(proj, pd.DataFrame(columns=["season", "player_id", "period", *STATS, *RATES]))
     assert out.PTS.dtype == float and out.PTS.tolist() == [10.0]  # fetch.py writes a header-only file before tip-off
+
+
+from model import cat_value, value_pg
+
+CATS = {"format": "categories", "teams": 2, "rounds": 2, "categories": [
+    {"stat": s, "reverse": s in ("PF", "TO")} for s in
+    ("PTS", "BLK", "STL", "AST", "OREB", "DREB", "PF", "TO", "FG%", "FT%", "3P%", "TW")]}
+
+
+def cat_frame(n=8, seed=0):
+    r = np.random.default_rng(seed)
+    d = pd.DataFrame({c: r.uniform(1, 10, n) for c in STATS + RATES + ["PF"]})
+    for m, a, k in (("FGM", "FGA", 2), ("FTM", "FTA", 1.3), ("3PM", "3PA", 2.8)):
+        d[a] = d[m] * k * r.uniform(0.8, 1.2, n)
+    d["TW"] = r.uniform(0.3, 0.7, n)
+    return d.assign(gp=70.0)
+
+
+def test_cat_value_reverse_and_volume_weighted_percentages():
+    d = cat_frame()
+    v = cat_value(d, CATS)
+    worse = d.copy()
+    worse.loc[0, "TO"] += 3  # more turnovers: lower value
+    assert cat_value(worse, CATS)[0] < v[0]
+    hot = d.copy()  # 90% on 10 shots beats 90% on 1 shot
+    hot.loc[0, ["FGM", "FGA"]] = [9, 10]
+    lo = d.copy()
+    lo.loc[0, ["FGM", "FGA"]] = [0.9, 1]
+    assert cat_value(hot, CATS)[0] > cat_value(lo, CATS)[0]
+    neg = d.copy()  # pct impact is relative to the league rate: 10% on 10 shots hurts
+    neg.loc[0, ["FGM", "FGA"]] = [1, 10]
+    assert cat_value(neg, CATS)[0] < cat_value(lo, CATS)[0]
+
+
+def test_cat_value_replacement_player_is_zero():
+    v = cat_value(cat_frame(), CATS)
+    n = CATS["teams"] * CATS["rounds"]
+    top = np.sort(v.values)[::-1]
+    assert top[n] == pytest.approx(0)  # the best undrafted player (equal gp)
+    assert (top[:n] > 0).all()
+
+
+def test_cat_value_skips_missing_pf_with_warning():
+    for d in (cat_frame().drop(columns="PF"), cat_frame().assign(PF=np.nan)):
+        with pytest.warns(UserWarning, match="PF"):
+            v = cat_value(d, CATS)
+        assert v.notna().all() and v.equals(cat_value(cat_frame().drop(columns="PF"), {**CATS, "categories": [
+            c for c in CATS["categories"] if c["stat"] != "PF"]}))
+
+
+def test_value_pg_dispatches_on_format():
+    d = cat_frame()
+    assert value_pg(d, {"scoring": {"PTS": 1, "TO": -1}}).equals(points(d, {"PTS": 1, "TO": -1}))
+    assert value_pg(d, {"format": "points", "scoring": {"PTS": 1}}).equals(points(d, {"PTS": 1}))
+    assert value_pg(d, CATS).equals(cat_value(d, CATS))
+
+
+def test_build_category_league_has_no_scoring_key():
+    from model import STANDARD_POINTS
+    games = fake_games()
+    players = pd.DataFrame({"player_id": [0, 1], "name": ["A", "B"], "team_id": [1, 2], "positions": ["G", "F"],
+                            "adp": [1.0, 2.0], "injury_status": ["ACTIVE", "ACTIVE"], "age": [25, 30]})
+    espn = pd.DataFrame([{"player_id": 1, "gp": 10.0, **{c: 9.0 for c in STATS}, **{c: 0.0 for c in RATES}, "REB": 8.0}])
+    base = {"season": 2027, "history_seasons": [2022, 2023, 2024, 2025, 2026]}
+    cat = build(games, players, espn, {0: 25, 1: 30}, {**base, **CATS})
+    pts = build(games, players, espn, {0: 25, 1: 30}, {**base, "scoring": STANDARD_POINTS})
+    pd.testing.assert_frame_equal(cat, pts)  # cv: points-league cv on ESPN's standard scoring
+
+
+def test_pf_is_a_shrunk_history_rate_and_optional():
+    games = fake_games().assign(PF=lambda d: (d.player_id % 2) * 4.0)  # odd players foul 4 a game, even 0
+    players = pd.DataFrame({"player_id": [0, 1], "name": ["A", "B"], "team_id": [1, 2], "positions": ["G", "F"],
+                            "adp": [1.0, 2.0], "injury_status": ["ACTIVE", "ACTIVE"], "age": [25, 30]})
+    espn = pd.DataFrame([{"player_id": 1, "gp": 10.0, **{c: 9.0 for c in STATS}, **{c: 0.0 for c in RATES if c != "PF"},
+                          "REB": 8.0}])  # ESPN never projects PF
+    s = {"season": 2027, "history_seasons": [2022, 2023, 2024, 2025, 2026], "scoring": SCORING}
+    pf = build(games, players, espn, {0: 25, 1: 30}, s).set_index("player_id").PF
+    assert 0 < pf[0] < 2 < pf[1] < 4  # shrunk toward the league's 2
+    old = build(games.drop(columns="PF"), players, espn, {0: 25, 1: 30}, s)  # games fetched before PF existed
+    assert old.PF.isna().all()
+    assert blend(old, games[games.season == 2026].drop(columns="PF")).PF.isna().all()

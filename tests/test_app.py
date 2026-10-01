@@ -179,3 +179,25 @@ def test_season_tab_shows_matchup_and_pickups(at, home, monkeypatch):
     assert tables[-2]["Points so far"].tolist() == [10, 20]
     assert list(tables[-1].columns[:3]) == ["Player", "Pos", "Games left this matchup"] and len(tables[-1]) == 15
     assert (tables[-1]["Drop"] != "").all()
+
+
+CATS = [{"stat": s, "reverse": s in ("PF", "TO")} for s in
+        ("PTS", "BLK", "STL", "AST", "OREB", "DREB", "PF", "TO", "FG%", "FT%", "3P%", "TW")]
+
+
+def test_category_league_labels_value_and_flags_sim(home):
+    s = json.loads((home / "settings.json").read_text())
+    s.pop("scoring")
+    (home / "settings.json").write_text(json.dumps({**s, "format": "categories", "categories": CATS, "teams": 16,
+                                                    "rounds": 11, "my_slot": 8}))
+    from streamlit.testing.v1 import AppTest
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60).run()
+    assert not at.exception
+    assert "Value/g" in at.dataframe[0].value.columns and "Pts/game" not in at.dataframe[0].value.columns
+    assert any("approximate in category leagues" in c.value for c in at.caption)
+    assert "scoring" not in json.loads((home / "settings.json").read_text())
+
+
+def test_points_league_has_no_category_caption(at):
+    assert "Pts/game" in at.dataframe[0].value.columns
+    assert not any("approximate in category leagues" in c.value for c in at.caption)

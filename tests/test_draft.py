@@ -213,3 +213,19 @@ def test_advise_status_tags():
     G, _ = day_matrix(b, SCHED)
     top = advise(b, ev_matrix(b, G), [], s)["top"]
     assert dict(zip(top.name, top.status)) == {"P0": "OUT", "P1": "DTD", "P2": ""}
+
+
+def test_category_league_board_and_advise():
+    from draft import advise
+    from model import cat_value
+    s = {**LEAGUE, "format": "categories", "teams": 2, "rounds": 1, "my_slot": 1, "slots": {"UTIL": 1},
+         "categories": [{"stat": "PTS", "reverse": False}, {"stat": "TO", "reverse": True}]}
+    s.pop("scoring")
+    b = make_board([(30, "UTIL", "ACTIVE", 1), (20, "UTIL", "ACTIVE", 1), (10, "UTIL", "ACTIVE", 1),
+                    (5, "UTIL", "ACTIVE", 1)], s)
+    assert b.fp_pg.tolist() == pytest.approx(cat_value(b, s).tolist())
+    assert b.fp_pg[2] == pytest.approx(0) and b.fp_pg[1] > 0  # replacement: the best undrafted player
+    assert b.sd.tolist() == pytest.approx((0.3 * b.fp_pg.abs()).tolist())
+    G, _ = day_matrix(b, SCHED)
+    top = advise(b, ev_matrix(b, G), [], s)["top"]
+    assert top.name.tolist()[:2] == ["P0", "P1"] and top.value.iloc[0] > 0
