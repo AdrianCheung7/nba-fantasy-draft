@@ -2,6 +2,7 @@
 import json
 import math
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -16,6 +17,10 @@ VIEWS = ["mSettings", "mTeam", "mRoster", "mStatus", "mMatchupScore", "mScoreboa
 SCORING = {0: "PTS", 1: "BLK", 2: "STL", 3: "AST", 4: "OREB", 5: "DREB", 7: "EJ", 8: "FF", 10: "TF",
            11: "TO", 13: "FGM", 15: "FTM", 17: "3PM", 23: "FGMI", 24: "FTMI", 25: "3PMI", 38: "TD",
            39: "QD", 43: "TW"}
+# category leagues: ESPN stat id -> category name (counting stats, % stats, PF, TW)
+CATEGORY_TYPES = {"H2H_CATEGORY", "H2H_MOST_CATEGORIES", "ROTO"}
+CATEGORIES = {0: "PTS", 1: "BLK", 2: "STL", 3: "AST", 4: "OREB", 5: "DREB", 6: "REB", 9: "PF", 11: "TO", 13: "FGM",
+              15: "FTM", 17: "3PM", 19: "FG%", 20: "FT%", 21: "3P%", 37: "DD", 38: "TD", 43: "TW"}
 
 
 def auth(home):
@@ -35,22 +40,34 @@ def settings_from_league(js, settings, swid=None):
     st = js["settings"]
     slots = {fetch.SLOT_NAMES[int(i)]: n for i, n in st["rosterSettings"]["lineupSlotCounts"].items()
              if n and int(i) in fetch.SLOT_NAMES}
-    pts = {i["statId"]: float(i["points"]) for i in st["scoringSettings"]["scoringItems"]}
+    items = st["scoringSettings"]["scoringItems"]
+    if st["scoringSettings"].get("scoringType") in CATEGORY_TYPES:
+        if bad := [i["statId"] for i in items if i["statId"] not in CATEGORIES]:
+            raise ValueError(f"unknown ESPN category stat id(s) {bad}: add them to espn.CATEGORIES")
+        fmt = {"format": "categories",
+               "categories": [{"stat": CATEGORIES[i["statId"]], "reverse": bool(i.get("isReverseItem"))} for i in items]}
+    else:
+        pts = {i["statId"]: float(i["points"]) for i in items}
+        fmt = {"format": "points", "scoring": {k: pts.get(i, 0.0) for i, k in SCORING.items()}}
+    acq, ds = st["acquisitionSettings"], st["draftSettings"]
     sch = st["scheduleSettings"]
     tid = settings.get("espn_team_id")
     if swid:
         me = swid.strip("{}").lower()
         tid = next((t["id"] for t in js["teams"] if me in [o.strip("{}").lower() for o in t["owners"]]), tid)
-    order = st["draftSettings"]["pickOrder"]
+    order = ds["pickOrder"]
     team = next((t for t in js["teams"] if t["id"] == tid), {})
-    return {**settings, "league_id": js["id"], "teams": st["size"], "slots": slots,
+    stale = {"scoring", "categories", "adds_per_day"}  # the other format's keys, and the retired add limit
+    return {**{k: v for k, v in settings.items() if k not in stale}, "league_id": js["id"], "teams": st["size"], "slots": slots,
             "rounds": sum(slots.values()) - slots.get("IR", 0),
-            "scoring": {k: pts.get(i, 0.0) for i, k in SCORING.items()},
-            "playoff_teams": sch["playoffTeamCount"], "playoff_round_periods": sch["playoffMatchupPeriodLength"],
+            **fmt, "playoff_teams": sch["playoffTeamCount"], "playoff_round_periods": sch["playoffMatchupPeriodLength"],
             "playoff_weeks": math.ceil(math.log2(sch["playoffTeamCount"])) * sch["playoffMatchupPeriodLength"],
             "espn_team_id": tid, "my_team_name": team.get("name", settings.get("my_team_name")),
             "my_slot": order.index(tid) + 1 if tid in order else settings.get("my_slot", 1),
-            "adds_per_day": settings.get("adds_per_day", 2)}
+            "adds_per_week": round(acq["matchupAcquisitionLimit"] * (7 if acq["matchupLimitPerScoringPeriod"] else 1)),
+            "pick_seconds": ds["timePerSelection"],
+            "draft_time": datetime.fromtimestamp(ds["date"] / 1000).isoformat(timespec="minutes")
+            if ds.get("date") else settings.get("draft_time")}
 
 
 def matchups(js, schedule):
@@ -101,7 +118,7 @@ def main():
         fetch.save(m, DATA / "matchups.csv")
     else:  # ESPN's preseason placeholder is 1 day per matchup; sim falls back to calendar weeks
         (DATA / "matchups.csv").unlink(missing_ok=True)
-    print(f"synced {new['my_team_name']} (team {new['espn_team_id']}, slot {new['my_slot']}/{new['teams']}): "
+    print(f"synced {new['format']} league, {new['my_team_name']} (team {new['espn_team_id']}, slot {new['my_slot']}/{new['teams']}): "
           f"{new['rounds']} rounds, {new['playoff_teams']} playoff teams, {new['playoff_weeks']} playoff periods, "
           f"{m.matchup.nunique()} matchup periods over {len(m)} days"
           + ("" if real else " (placeholder calendar, matchups.csv not written)"))

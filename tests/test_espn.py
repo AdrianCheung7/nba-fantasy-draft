@@ -1,13 +1,16 @@
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import espn
 
 JS = json.loads((Path(__file__).parent / "fixtures" / "espn_league.json").read_text())
+CATS = json.loads((Path(__file__).parent / "fixtures" / "espn_league_cats.json").read_text())  # live 16-team H2H categories, trimmed
 OLD = {"season": 2027, "my_slot": 1, "adds_per_day": 3, "strategy": "greedy", "slots": {"G": 9}}
 SCHED = pd.DataFrame({"team_id": [1, 2], "date": ["2026-10-20", "2026-10-21"], "week": [1, 1]})
 
@@ -32,13 +35,43 @@ def test_settings_from_league():
     assert (s["teams"], s["rounds"], s["my_slot"], s["espn_team_id"], s["my_team_name"]) == (14, 12, 9, 13, "Raj")
     assert (s["playoff_teams"], s["playoff_round_periods"], s["playoff_weeks"], s["league_id"]) == (4, 2, 4, 178869420)
     assert len(s["scoring"]) == 19 and s["scoring"]["FGMI"] == -0.5 and s["scoring"]["QD"] == 100 and s["scoring"]["3PM"] == 2
-    assert s["adds_per_day"] == 3 and s["strategy"] == "greedy" and OLD["slots"] == {"G": 9}
+    assert s["strategy"] == "greedy" and OLD["slots"] == {"G": 9}
+    assert s["format"] == "points" and "categories" not in s and "adds_per_day" not in s
+    assert (s["adds_per_week"], s["pick_seconds"], s["draft_time"]) == (3, 75, datetime.fromtimestamp(1790825400).isoformat(timespec="minutes"))
+
+
+def test_settings_from_league_categories():
+    old = {**OLD, "scoring": {"PTS": 1.0}, "adds_per_day": 2}
+    s = espn.settings_from_league(CATS, old, "{test-swid}")
+    assert s["format"] == "categories" and "scoring" not in s and "adds_per_day" not in s
+    assert s["categories"] == [{"stat": n, "reverse": r} for n, r in [
+        ("FT%", False), ("OREB", False), ("3P%", False), ("DREB", False), ("TW", False), ("PF", True),
+        ("PTS", False), ("BLK", False), ("STL", False), ("TO", True), ("AST", False), ("FG%", False)]]
+    assert s["slots"] == {"G": 2, "F": 1, "SG/SF": 2, "PF/C": 1, "UTIL": 1, "BE": 4, "IR": 2}
+    assert (s["teams"], s["rounds"], s["my_slot"], s["espn_team_id"], s["my_team_name"]) == (16, 11, 8, 13, "Raj")
+    assert (s["adds_per_week"], s["pick_seconds"], s["draft_time"]) == (4, 60, datetime.fromtimestamp(1790825400).isoformat(timespec="minutes"))
+    assert "scoring" in old  # input untouched
+
+
+def test_settings_from_league_stale_keys_follow_format():
+    assert "categories" not in espn.settings_from_league(JS, {**OLD, "categories": [], "scoring": {}}, None)
+    assert espn.settings_from_league(CATS, {**OLD, "adds_per_day": 2}, None)["adds_per_week"] == 4
+    nodate = json.loads(json.dumps(CATS))
+    del nodate["settings"]["draftSettings"]["date"]
+    assert espn.settings_from_league(nodate, {**OLD, "draft_time": "x"}, None)["draft_time"] == "x"
+
+
+def test_settings_from_league_unknown_category_raises():
+    js = json.loads(json.dumps(CATS))
+    js["settings"]["scoringSettings"]["scoringItems"].append({"statId": 99, "points": 1.0})
+    with pytest.raises(ValueError, match="99"):
+        espn.settings_from_league(js, OLD, None)
 
 
 def test_settings_from_league_defaults_and_no_swid():
     s = espn.settings_from_league(JS, {**OLD, "espn_team_id": 5, "adds_per_day": 1}, None)
     assert s["espn_team_id"] == 5 and s["my_slot"] == 2  # kept id, slot re-derived from pickOrder
-    assert espn.settings_from_league(JS, {"season": 2027}, "{TEST-SWID}")["adds_per_day"] == 2
+    assert espn.settings_from_league(JS, {"season": 2027}, "{TEST-SWID}")["adds_per_week"] == 3
 
 
 def test_matchups_use_espn_calendar():
@@ -95,3 +128,9 @@ def test_main_skips_placeholder_calendar(tmp_path, monkeypatch):
     (tmp_path / "data" / "matchups.csv").write_text("stale")
     run_main(tmp_path, monkeypatch, JS)  # fixture = ESPN's 1-day-per-matchup preseason calendar
     assert not (tmp_path / "data" / "matchups.csv").exists()
+
+
+def test_main_syncs_category_league(tmp_path, monkeypatch):
+    s = run_main(tmp_path, monkeypatch, CATS)
+    assert (s["format"], s["teams"], s["rounds"], s["my_slot"]) == ("categories", 16, 11, 8)
+    assert len(s["categories"]) == 12 and "scoring" not in s
