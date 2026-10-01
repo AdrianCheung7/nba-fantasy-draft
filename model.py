@@ -246,7 +246,8 @@ def build(games, players, espn_proj, ages, settings, espn_hist=None):
     seasons = set(tab.season)
     stat_m, gp_m, kappa = fit(tab, ages, [s for s in settings["history_seasons"] if s - 1 in seasons], season)
     espn_proj = espn_split(espn_proj, tab, season - 1)
-    w = pick_weight(tab, ages, espn_hist or {}, settings["scoring"], season)
+    sc = settings.get("scoring", STANDARD_POINTS)  # category leagues: cv on a points yardstick (relative spread)
+    w = pick_weight(tab, ages, espn_hist or {}, sc, season)
     proj = blend_espn(predict(stat_m, gp_m, tab, ages, season, season), espn_proj, w)
     rookies = espn_proj[~espn_proj.player_id.isin(proj.player_id)][["player_id", "gp", *STATS]].copy()
     # ESPN's own gp projections run ~20% higher than the model's for players in both frames (F2): scale
@@ -258,7 +259,7 @@ def build(games, players, espn_proj, ages, settings, espn_hist=None):
     proj = pd.concat([proj, rookies], ignore_index=True)
     proj = proj.merge(shrunk_rates(games, season), on="player_id", how="left")
     proj[RATES] = proj[RATES].fillna(games[RATES].mean())
-    cv = fp_cv(games, settings["scoring"], season)
+    cv = fp_cv(games, sc, season)
     proj = proj.merge(cv, on="player_id", how="left")
     proj["cv"] = proj.cv.fillna(cv.cv.median())
     out = players.merge(proj, on="player_id")
@@ -288,7 +289,7 @@ def blend(proj, cur_games, k=20):
 def backtest(games, ages, settings, hist):
     """Per test season: FP/g MAE of each stage (all players with 20+ games, and the top 150 by projected season FP)
     vs 'repeat last season'. hist = {season: ESPN preseason projection}. attrs['w'] = the ESPN blend weight."""
-    tab, sc, season = season_table(games), settings["scoring"], settings["season"]
+    tab, sc, season = season_table(games), settings.get("scoring", STANDARD_POINTS), settings["season"]
     w = pick_weight(tab, ages, hist, sc, season)
     rows = []
     for t in sorted(hist):
@@ -330,7 +331,7 @@ def main():
     if cur.exists():
         proj = blend(proj, pd.read_csv(cur))
     proj.to_csv(DATA / "projections.csv", index=False)
-    top = proj.assign(fp=points(proj, s["scoring"])).nlargest(15, "fp")
+    top = proj.assign(fp=value_pg(proj, s)).nlargest(15, "fp")
     print(top[["name", "positions", "gp", "fp"]].to_string(index=False))
 
 

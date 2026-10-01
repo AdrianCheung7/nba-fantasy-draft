@@ -237,3 +237,15 @@ def test_value_pg_dispatches_on_format():
     assert value_pg(d, {"scoring": {"PTS": 1, "TO": -1}}).equals(points(d, {"PTS": 1, "TO": -1}))
     assert value_pg(d, {"format": "points", "scoring": {"PTS": 1}}).equals(points(d, {"PTS": 1}))
     assert value_pg(d, CATS).equals(cat_value(d, CATS))
+
+
+def test_build_category_league_has_no_scoring_key():
+    from model import STANDARD_POINTS
+    games = fake_games()
+    players = pd.DataFrame({"player_id": [0, 1], "name": ["A", "B"], "team_id": [1, 2], "positions": ["G", "F"],
+                            "adp": [1.0, 2.0], "injury_status": ["ACTIVE", "ACTIVE"], "age": [25, 30]})
+    espn = pd.DataFrame([{"player_id": 1, "gp": 10.0, **{c: 9.0 for c in STATS}, **{c: 0.0 for c in RATES}, "REB": 8.0}])
+    base = {"season": 2027, "history_seasons": [2022, 2023, 2024, 2025, 2026]}
+    cat = build(games, players, espn, {0: 25, 1: 30}, {**base, **CATS})
+    pts = build(games, players, espn, {0: 25, 1: 30}, {**base, "scoring": STANDARD_POINTS})
+    pd.testing.assert_frame_equal(cat, pts)  # cv: points-league cv on ESPN's standard scoring

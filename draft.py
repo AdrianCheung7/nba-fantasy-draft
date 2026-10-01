@@ -2,7 +2,7 @@
 import numpy as np
 import pandas as pd
 
-from model import points
+from model import value_pg
 
 IR_OK = {"OUT", "INJURY_RESERVE"}
 NON_STARTING = {"BE", "IR"}
@@ -23,7 +23,7 @@ def starters(settings):
 
 def board(proj, settings):
     b = proj.reset_index(drop=True).copy()
-    b["fp_pg"] = points(b, settings["scoring"])
+    b["fp_pg"] = value_pg(b, settings)
     b["avail"] = (b.gp / 82).clip(0, 1)
     b["sd"] = b.cv * b.fp_pg.abs()
     b["season_fp"] = b.fp_pg * b.gp
