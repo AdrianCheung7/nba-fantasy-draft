@@ -1,0 +1,442 @@
+{
+ "id": 178869420,
+ "settings": {
+  "size": 16,
+  "acquisitionSettings": {
+   "matchupAcquisitionLimit": 0.5714285714285714,
+   "matchupLimitPerScoringPeriod": true,
+   "waiverHours": 48
+  },
+  "draftSettings": {
+   "date": 1790825400000,
+   "pickOrder": [
+    12,
+    5,
+    9,
+    6,
+    2,
+    7,
+    8,
+    13,
+    14,
+    15,
+    16,
+    3,
+    4,
+    1,
+    10,
+    11
+   ],
+   "timePerSelection": 60,
+   "type": "SNAKE"
+  },
+  "rosterSettings": {
+   "lineupSlotCounts": {
+    "0": 0,
+    "1": 0,
+    "2": 0,
+    "3": 0,
+    "4": 0,
+    "5": 2,
+    "6": 1,
+    "7": 2,
+    "8": 0,
+    "9": 1,
+    "10": 0,
+    "11": 1,
+    "12": 4,
+    "13": 2,
+    "14": 0
+   }
+  },
+  "scheduleSettings": {
+   "matchupPeriodCount": 19,
+   "matchupPeriods": {
+    "1": [
+     1
+    ],
+    "2": [
+     2
+    ],
+    "3": [
+     3
+    ],
+    "4": [
+     4
+    ],
+    "5": [
+     5
+    ],
+    "6": [
+     6
+    ],
+    "7": [
+     7
+    ],
+    "8": [
+     8
+    ],
+    "9": [
+     9
+    ],
+    "10": [
+     10
+    ],
+    "11": [
+     11
+    ],
+    "12": [
+     12
+    ],
+    "13": [
+     13
+    ],
+    "14": [
+     14
+    ],
+    "15": [
+     15
+    ],
+    "16": [
+     16
+    ],
+    "17": [
+     17
+    ],
+    "18": [
+     18
+    ],
+    "19": [
+     19
+    ],
+    "20": [
+     20,
+     21
+    ],
+    "21": [
+     22,
+     23
+    ]
+   },
+   "playoffMatchupPeriodLength": 2,
+   "playoffTeamCount": 4
+  },
+  "scoringSettings": {
+   "scoringType": "H2H_CATEGORY",
+   "scoringItems": [
+    {
+     "statId": 20,
+     "points": 1.0,
+     "isReverseItem": false
+    },
+    {
+     "statId": 4,
+     "points": 1.0,
+     "isReverseItem": false
+    },
+    {
+     "statId": 21,
+     "points": 1.0,
+     "isReverseItem": false
+    },
+    {
+     "statId": 5,
+     "points": 1.0,
+     "isReverseItem": false
+    },
+    {
+     "statId": 43,
+     "points": 1.0,
+     "isReverseItem": false
+    },
+    {
+     "statId": 9,
+     "points": 1.0,
+     "isReverseItem": true
+    },
+    {
+     "statId": 0,
+     "points": 1.0,
+     "isReverseItem": false
+    },
+    {
+     "statId": 1,
+     "points": 1.0,
+     "isReverseItem": false
+    },
+    {
+     "statId": 2,
+     "points": 1.0,
+     "isReverseItem": false
+    },
+    {
+     "statId": 11,
+     "points": 1.0,
+     "isReverseItem": true
+    },
+    {
+     "statId": 3,
+     "points": 1.0,
+     "isReverseItem": false
+    },
+    {
+     "statId": 19,
+     "points": 1.0,
+     "isReverseItem": false
+    }
+   ]
+  }
+ },
+ "teams": [
+  {
+   "id": 1,
+   "name": "Team 1",
+   "owners": [
+    "{OTHER-1}"
+   ],
+   "roster": {
+    "entries": []
+   }
+  },
+  {
+   "id": 2,
+   "name": "Team 2",
+   "owners": [
+    "{OTHER-2}"
+   ],
+   "roster": {
+    "entries": []
+   }
+  },
+  {
+   "id": 3,
+   "name": "Team 3",
+   "owners": [
+    "{OTHER-3}"
+   ],
+   "roster": {
+    "entries": []
+   }
+  },
+  {
+   "id": 4,
+   "name": "Team 4",
+   "owners": [
+    "{OTHER-4}"
+   ],
+   "roster": {
+    "entries": []
+   }
+  },
+  {
+   "id": 5,
+   "name": "Team 5",
+   "owners": [
+    "{OTHER-5}"
+   ],
+   "roster": {
+    "entries": []
+   }
+  },
+  {
+   "id": 6,
+   "name": "Team 6",
+   "owners": [
+    "{OTHER-6}"
+   ],
+   "roster": {
+    "entries": []
+   }
+  },
+  {
+   "id": 7,
+   "name": "Team 7",
+   "owners": [
+    "{OTHER-7}"
+   ],
+   "roster": {
+    "entries": []
+   }
+  },
+  {
+   "id": 8,
+   "name": "Team 8",
+   "owners": [
+    "{OTHER-8}"
+   ],
+   "roster": {
+    "entries": []
+   }
+  },
+  {
+   "id": 9,
+   "name": "Team 9",
+   "owners": [
+    "{OTHER-9}"
+   ],
+   "roster": {
+    "entries": []
+   }
+  },
+  {
+   "id": 10,
+   "name": "Team 10",
+   "owners": [
+    "{OTHER-10}"
+   ],
+   "roster": {
+    "entries": []
+   }
+  },
+  {
+   "id": 11,
+   "name": "Team 11",
+   "owners": [
+    "{OTHER-11}"
+   ],
+   "roster": {
+    "entries": []
+   }
+  },
+  {
+   "id": 12,
+   "name": "Team 12",
+   "owners": [
+    "{OTHER-12}"
+   ],
+   "roster": {
+    "entries": []
+   }
+  },
+  {
+   "id": 13,
+   "name": "Raj",
+   "owners": [
+    "{TEST-SWID}"
+   ],
+   "roster": {
+    "entries": []
+   }
+  },
+  {
+   "id": 14,
+   "name": "Team 14",
+   "owners": [
+    "{OTHER-14}"
+   ],
+   "roster": {
+    "entries": []
+   }
+  },
+  {
+   "id": 15,
+   "name": "Team 15",
+   "owners": [
+    "{OTHER-15}"
+   ],
+   "roster": {
+    "entries": []
+   }
+  },
+  {
+   "id": 16,
+   "name": "Team 16",
+   "owners": [
+    "{OTHER-16}"
+   ],
+   "roster": {
+    "entries": []
+   }
+  }
+ ],
+ "schedule": [
+  {
+   "matchupPeriodId": 1,
+   "home": {
+    "teamId": 6,
+    "totalPoints": 0.0
+   },
+   "away": {
+    "teamId": 11,
+    "totalPoints": 0.0
+   }
+  },
+  {
+   "matchupPeriodId": 1,
+   "home": {
+    "teamId": 14,
+    "totalPoints": 0.0
+   },
+   "away": {
+    "teamId": 7,
+    "totalPoints": 0.0
+   }
+  },
+  {
+   "matchupPeriodId": 1,
+   "home": {
+    "teamId": 9,
+    "totalPoints": 0.0
+   },
+   "away": {
+    "teamId": 5,
+    "totalPoints": 0.0
+   }
+  },
+  {
+   "matchupPeriodId": 1,
+   "home": {
+    "teamId": 12,
+    "totalPoints": 0.0
+   },
+   "away": {
+    "teamId": 1,
+    "totalPoints": 0.0
+   }
+  },
+  {
+   "matchupPeriodId": 1,
+   "home": {
+    "teamId": 10,
+    "totalPoints": 0.0
+   },
+   "away": {
+    "teamId": 15,
+    "totalPoints": 0.0
+   }
+  },
+  {
+   "matchupPeriodId": 1,
+   "home": {
+    "teamId": 8,
+    "totalPoints": 0.0
+   },
+   "away": {
+    "teamId": 2,
+    "totalPoints": 0.0
+   }
+  },
+  {
+   "matchupPeriodId": 1,
+   "home": {
+    "teamId": 16,
+    "totalPoints": 0.0
+   },
+   "away": {
+    "teamId": 4,
+    "totalPoints": 0.0
+   }
+  },
+  {
+   "matchupPeriodId": 1,
+   "home": {
+    "teamId": 3,
+    "totalPoints": 0.0
+   },
+   "away": {
+    "teamId": 13,
+    "totalPoints": 0.0
+   }
+  }
+ ]
+}

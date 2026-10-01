@@ -18,7 +18,9 @@
     1,
     10,
     11
-   ]
+   ],
+   "date": 1790825400000,
+   "timePerSelection": 75
   },
   "rosterSettings": {
    "lineupSlotCounts": {
@@ -189,7 +191,12 @@
      "statId": 3,
      "points": 1.0
     }
-   ]
+   ],
+   "scoringType": "H2H_POINTS"
+  },
+  "acquisitionSettings": {
+   "matchupAcquisitionLimit": 3.0,
+   "matchupLimitPerScoringPeriod": false
   }
  },
  "teams": [

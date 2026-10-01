@@ -16,14 +16,19 @@ ATHLETE = "https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/at
 
 # ESPN fantasy stat ids, verified 2026-09-27 against a real 2025-26 stat line.
 STAT_IDS = {"PTS": 0, "BLK": 1, "STL": 2, "AST": 3, "OREB": 4, "DREB": 5, "EJ": 7, "FF": 8,
-            "TF": 10, "TO": 11, "FGM": 13, "FGA": 14, "FTM": 15, "FTA": 16, "3PM": 17,
+            "PF": 9, "TF": 10, "TO": 11, "FGM": 13, "FGA": 14, "FTM": 15, "FTA": 16, "3PM": 17,
             "3PA": 18, "TD": 38, "QD": 39, "MIN": 40, "TW": 43}
 SLOT_NAMES = {0: "PG", 1: "SG", 2: "SF", 3: "PF", 4: "C", 5: "G", 6: "F", 7: "SG/SF",
               8: "G/F", 9: "PF/C", 10: "F/C", 11: "UTIL", 12: "BE", 13: "IR"}
-# Live ESPN behavior (verified 2026-09-27): a bare GET on the players endpoint returns
-# only its default page of 50 players. This header requests the full player pool.
-PLAYER_HEADERS = {"x-fantasy-filter": json.dumps(
-    {"players": {"limit": 5000, "sortDraftRanks": {"sortPriority": 100, "sortAsc": True, "value": "STANDARD"}}})}
+# ESPN draftRanksByRankType keys, in preference order: the list the league's draft room shows comes first
+RANK_TYPES = {"categories": ("STANDARD", "POINTS"), "points": ("POINTS", "STANDARD")}
+
+
+def player_headers(fmt="points"):
+    # Live ESPN behavior (verified 2026-09-27): a bare GET on the players endpoint returns
+    # only its default page of 50 players. This header requests the full player pool.
+    return {"x-fantasy-filter": json.dumps({"players": {"limit": 5000, "sortDraftRanks": {
+        "sortPriority": 100, "sortAsc": True, "value": RANK_TYPES[fmt][0]}}})}
 
 
 def get(url, headers=None, tries=3, cookies=None):
@@ -62,24 +67,27 @@ def parse_games(players, season):
 
 
 def parse_proj(players, season):
-    # ESPN projects total rebounds (id 6) only: OREB/DREB stay 0 here, model.py splits REB
-    rows = [{"player_id": p["id"], "gp": st["42"], **{k: v / st["42"] for k, v in stat_row(st).items()},
+    # ESPN projects total rebounds (id 6) only: OREB/DREB stay 0 here, model.py splits REB.
+    # It never projects PF (id 9, verified 2026-09-30), so PF is left out rather than a fake 0.
+    cols = [k for k in STAT_IDS if k != "PF"]
+    rows = [{"player_id": p["id"], "gp": st["42"], **{k: v / st["42"] for k, v in stat_row(st).items() if k != "PF"},
              "REB": st.get("6", 0.0) / st["42"]}
             for p in players for _, st in entries(p, 0, 1, season) if st.get("42", 0) > 0]
-    return pd.DataFrame(rows, columns=["player_id", "gp", *STAT_IDS, "REB"])
+    return pd.DataFrame(rows, columns=["player_id", "gp", *cols, "REB"])
 
 
-def rank(p):
+def rank(p, fmt="points"):
     r = p.get("draftRanksByRankType") or {}
-    return (r.get("POINTS") or r.get("STANDARD") or {}).get("rank") or 999
+    first, second = RANK_TYPES[fmt]
+    return (r.get(first) or r.get(second) or {}).get("rank") or 999
 
 
-def parse_players(players, ages):
+def parse_players(players, ages, fmt="points"):
     rows = [{"player_id": p["id"], "name": p.get("fullName", str(p["id"])), "team_id": p.get("proTeamId", 0),
              "positions": "|".join(SLOT_NAMES[i] for i in p["eligibleSlots"] if i in SLOT_NAMES),
              "adp": (p.get("ownership") or {}).get("averageDraftPosition") or 999.0,
              "injury_status": p.get("injuryStatus") or "ACTIVE",
-             "age": ages.get(p["id"]), "espn_rank": rank(p)}
+             "age": ages.get(p["id"]), "espn_rank": rank(p, fmt)}
             for p in players if p.get("active") and p.get("eligibleSlots")]
     return pd.DataFrame(rows, columns=["player_id", "name", "team_id", "positions", "adp", "injury_status", "age", "espn_rank"])
 
@@ -115,21 +123,23 @@ def fetch_ages(ids, cache):
 
 def main(refresh=False):
     s = json.loads((ROOT / "settings.json").read_text())
+    fmt = s.get("format", "points")  # categories: rank by ESPN STANDARD, the list the draft room shows
+    headers = player_headers(fmt)
     DATA.mkdir(exist_ok=True)
     for season in s["history_seasons"]:
         out, proj = DATA / f"games_{season}.csv", DATA / f"espn_proj_{season}.csv"
         if refresh or not (out.exists() and proj.exists()):
             print(f"fetching {season} game logs ...")
-            past = get(PLAYERS.format(season=season), headers=PLAYER_HEADERS)
+            past = get(PLAYERS.format(season=season), headers=headers)
             save(parse_games(past, season), out)
             save(parse_proj(past, season), proj)  # that season's preseason ESPN projection: model.py picks its blend weight
     print("fetching 2026-27 players ...")
-    cur = get(PLAYERS.format(season=s["season"]), headers=PLAYER_HEADERS)
+    cur = get(PLAYERS.format(season=s["season"]), headers=headers)
     save(parse_proj(cur, s["season"]), DATA / "espn_proj.csv")
     save(parse_games(cur, s["season"]), DATA / f"games_{s['season']}.csv")  # in-season: model.py blends it in
     ids = [p["id"] for p in cur if p.get("active") and p.get("eligibleSlots") and p.get("proTeamId", 0) != 0]
     ages = fetch_ages(ids, DATA / "ages.csv")
-    save(parse_players(cur, ages), DATA / "players.csv")
+    save(parse_players(cur, ages, fmt), DATA / "players.csv")
     save(parse_schedule(get(SCHEDULE.format(season=s["season"]))), DATA / "schedule.csv")
     print("done")
 
