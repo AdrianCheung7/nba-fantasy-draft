@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from draft import (STRATEGIES, board, day_matrix, espn_rank, ev_matrix, feasible, lineup, recommend, slot_fit,
+from draft import (board, day_matrix, espn_rank, ev_matrix, feasible, lineup, offered, recommend, slot_fit,
                    snake)
 
 ROOT = Path(__file__).parent
@@ -276,7 +276,7 @@ def drafts(jobs, c, settings, me, seed, n_seasons):
 
 def run(settings, slot, n_drafts=20, n_seasons=20, seed=0, strategies=None, b=None, schedule=None, matchups=None):
     validate(settings, slot)
-    jobs = [(strat, opp, d) for strat in strategies or list(STRATEGIES) for opp in OPPONENTS for d in range(n_drafts)]
+    jobs = [(strat, opp, d) for strat in strategies or offered(settings) for opp in OPPONENTS for d in range(n_drafts)]
     sums = [m[slot - 1, :4] for m in drafts(jobs, prep(settings, b, schedule, matchups), settings, slot - 1, seed,
                                             n_seasons)]
     rows = []

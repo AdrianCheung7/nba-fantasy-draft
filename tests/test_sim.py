@@ -142,7 +142,7 @@ def test_espn_pick_unranked_after_ranked_then_by_value():
     assert espn_pick(b, [], {1}, TINY, np.random.default_rng(0)) == 2
 
 
-from draft import STRATEGIES
+from draft import STRATEGIES, offered
 from sim import best, from_draft, report, report_from_rosters, run
 
 
@@ -151,7 +151,7 @@ def test_run_smoke():
     b = make_board([(40 - 3 * i, "UTIL|BE|IR", "OUT" if i == 5 else "ACTIVE", 1 + i % 4, 0.3)
                     for i in range(12)], s)
     df = run(s, 2, n_drafts=2, n_seasons=3, b=b, schedule=make_schedule())
-    assert len(df) == len(STRATEGIES) * 2
+    assert len(df) == len(offered(s)) * 2  # punts: category leagues only
     assert df[["p_champion", "p_playoffs", "p_bottom3"]].stack().between(0, 1).all()
     assert "obj_se" in df.columns and (df.obj_se >= 0).all()
     assert best(df) in STRATEGIES
