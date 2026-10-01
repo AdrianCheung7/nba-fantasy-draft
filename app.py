@@ -13,6 +13,7 @@ import espn
 from draft import STRATEGIES, advise, board, day_matrix, ev_matrix, slot_fit, snake, starters
 from fetch import SLOT_NAMES
 from season import matchup_projection, pickups, rest_of_matchup, split_roster, week_ev, window
+from season import INJURY, adds_left, cat_lines, cat_matchup, cat_pickups, cat_scores, so_far_from_scores, value_series
 from sim import LEAGUE_KEYS, calendar, validate
 
 ROOT = Path(__file__).parent
@@ -179,6 +180,8 @@ def render_season():
     mine, active = split_roster(rows[rows.team_id == s["espn_team_id"]], idx)
     fit, cap = slot_fit(b, s)
     evw = week_ev(b, ev, wk)
+    if s.get("format") == "categories":
+        return render_cat_season(js, rows, idx, mine, active, wk, ros, mid, int((per == p).sum()))
     st.subheader(f"This week's matchup (matchup {mid}, {int(wk.sum())} game days left)")
     sc = espn.scores(js, mid, s["espn_team_id"])
     if sc is None:
@@ -203,6 +206,43 @@ def render_season():
     st.caption("Points added to your daily best lineup if you add the player and drop the named one (never an IR "
                "player). Out players count 0 games this matchup, day-to-day players half. ★ = adds points over the "
                "rest of the season too. Injury statuses come from the last Refresh.")
+
+
+def render_cat_season(js, rows, idx, mine, active, wk, ros, mid, days_total):
+    """Season tab for H2H-category leagues: per-category projection, expected categories won, pickups."""
+    cats, me = s["categories"], s["espn_team_id"]
+    fit, cap = slot_fit(b, s)
+    val = value_series(b, s).values
+    avail, inj = b.avail.values, b.injury_status.map(INJURY).fillna(1.0).values
+    evw = week_ev(b, ((val - val.min() + 1) * avail)[:, None] * G, wk)  # shifted so every player on a game day can start
+    st.subheader(f"This week's matchup (matchup {mid}, {int(wk.sum())} game days left)")
+    sc = cat_scores(js, mid, me)
+    if sc is None:
+        return st.info("No head-to-head game found for this matchup.")
+    opp = split_roster(rows[rows.team_id == sc["opp_id"]], idx)[1]
+    lines = [cat_lines(b, evw, fit, cap, t, avail * inj, cats) for t in (active, opp)]
+    frac = (days_total - wk.sum()) / max(wk.sum(), 1)  # days played / days left, to guess attempts so far
+    so_me, so_opp = (so_far_from_scores(sc[k], l, cats, frac) for k, l in zip(("me", "opp"), lines))
+    df, won = cat_matchup(lines[0], lines[1], so_me, so_opp, cats)
+    fmt = lambda c, x: f"{x:.3f}" if c.endswith("%") else f"{x:.1f}"
+    st.dataframe(pd.DataFrame({"Cat": df.cat, "Me": [fmt(c, x) for c, x in zip(df.cat, df.me)],
+                               "Opp": [fmt(c, x) for c, x in zip(df.cat, df.opp)],
+                               "Win %": (df.p_win * 100).round(0)}), hide_index=True)
+    st.markdown(f"**Expected categories: {won:.1f} – {len(cats) - won:.1f}**")
+    st.subheader("Pickups")
+    if not mine:
+        return st.info("Your roster is empty (the draft hasn't happened yet).")
+    free = b.index[~b.player_id.isin(rows.player_id)]
+    pk = cat_pickups(b, val, G, mine, active, free, wk, ros, s, lines[1], so_me, so_opp)
+    st.dataframe(pd.DataFrame({"Player": pk.name, "Pos": pk.pos, "Games left this matchup": pk.games.round(1),
+                               "+Cats this matchup": pk.cat_gain.round(2), "+Value ROS": pk.ros_gain.round(1),
+                               "★": pk.star.map({True: "★", False: ""}), "Drop": pk["drop"]}), hide_index=True)
+    limit = s.get("adds_per_week", 4)
+    left = adds_left(js, me, mid, limit)
+    st.caption(f"Adds left this week: {left} of {limit}." if left is not None else f"{limit} adds per week.")
+    st.caption("+Cats = expected categories won this matchup gained by adding the player and dropping the named one "
+               "(never an IR player). +Value ROS = rest-of-season lineup value gained. ★ = helps over the rest of "
+               "the season too. Out players count 0 games this matchup, day-to-day players half.")
 
 
 draft_tab, season_tab = st.tabs(["Draft", "Season"])
