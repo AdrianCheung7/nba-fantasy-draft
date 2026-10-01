@@ -226,10 +226,11 @@ def test_cat_value_replacement_player_is_zero():
 
 
 def test_cat_value_skips_missing_pf_with_warning():
-    d = cat_frame().drop(columns="PF")
-    with pytest.warns(UserWarning, match="PF"):
-        v = cat_value(d, CATS)
-    assert v.notna().all()
+    for d in (cat_frame().drop(columns="PF"), cat_frame().assign(PF=np.nan)):
+        with pytest.warns(UserWarning, match="PF"):
+            v = cat_value(d, CATS)
+        assert v.notna().all() and v.equals(cat_value(cat_frame().drop(columns="PF"), {**CATS, "categories": [
+            c for c in CATS["categories"] if c["stat"] != "PF"]}))
 
 
 def test_value_pg_dispatches_on_format():
@@ -249,3 +250,17 @@ def test_build_category_league_has_no_scoring_key():
     cat = build(games, players, espn, {0: 25, 1: 30}, {**base, **CATS})
     pts = build(games, players, espn, {0: 25, 1: 30}, {**base, "scoring": STANDARD_POINTS})
     pd.testing.assert_frame_equal(cat, pts)  # cv: points-league cv on ESPN's standard scoring
+
+
+def test_pf_is_a_shrunk_history_rate_and_optional():
+    games = fake_games().assign(PF=lambda d: (d.player_id % 2) * 4.0)  # odd players foul 4 a game, even 0
+    players = pd.DataFrame({"player_id": [0, 1], "name": ["A", "B"], "team_id": [1, 2], "positions": ["G", "F"],
+                            "adp": [1.0, 2.0], "injury_status": ["ACTIVE", "ACTIVE"], "age": [25, 30]})
+    espn = pd.DataFrame([{"player_id": 1, "gp": 10.0, **{c: 9.0 for c in STATS}, **{c: 0.0 for c in RATES if c != "PF"},
+                          "REB": 8.0}])  # ESPN never projects PF
+    s = {"season": 2027, "history_seasons": [2022, 2023, 2024, 2025, 2026], "scoring": SCORING}
+    pf = build(games, players, espn, {0: 25, 1: 30}, s).set_index("player_id").PF
+    assert 0 < pf[0] < 2 < pf[1] < 4  # shrunk toward the league's 2
+    old = build(games.drop(columns="PF"), players, espn, {0: 25, 1: 30}, s)  # games fetched before PF existed
+    assert old.PF.isna().all()
+    assert blend(old, games[games.season == 2026].drop(columns="PF")).PF.isna().all()

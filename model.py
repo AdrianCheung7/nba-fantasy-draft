@@ -13,7 +13,8 @@ from sklearn.preprocessing import StandardScaler
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
 STATS = ["PTS", "FGM", "FGA", "FTM", "FTA", "3PM", "3PA", "OREB", "DREB", "AST", "STL", "BLK", "TO", "MIN"]
-RATES = ["EJ", "FF", "TF", "TD", "QD", "TW"]  # rare or team-driven: shrunk rates, not regression
+RATES = ["EJ", "FF", "TF", "TD", "QD", "TW", "PF"]  # rare or team-driven: shrunk rates, not regression
+# ponytail: PF too, since ESPN never projects it; a role change (more minutes) is missed, regress it if PF matters
 FEATURES = [f"{c}_{k}" for c in STATS + ["GP"] for k in (1, 2, 3)] + ["age"]
 GP_FEATURES = [f"{c}_{k}" for c in ("GP", "MIN") for k in (1, 2, 3)] + ["age", "age2"]  # games played: lean beats FEATURES
 SHRINK_K = 40  # ponytail: prior strength in weighted games; tune if rates look too flat/noisy
@@ -40,7 +41,7 @@ def cat_z(df, settings):
     A category whose column is missing (PF before fetch.py collects it) is skipped with a warning."""
     cats = []
     for c in settings["categories"]:
-        if all(k in df for k in PCT.get(c["stat"], [c["stat"]])):
+        if all(k in df and df[k].notna().any() for k in PCT.get(c["stat"], [c["stat"]])):
             cats.append(c)
         else:
             warnings.warn(f"category {c['stat']} has no data column; skipped until fetch.py collects it")
@@ -242,6 +243,7 @@ def fp_cv(games, scoring, target):
 
 def build(games, players, espn_proj, ages, settings, espn_hist=None):
     season = settings["season"]
+    games = games if "PF" in games else games.assign(PF=np.nan)  # fetched before PF: an all-NaN column
     tab = season_table(games)
     seasons = set(tab.season)
     stat_m, gp_m, kappa = fit(tab, ages, [s for s in settings["history_seasons"] if s - 1 in seasons], season)
@@ -276,7 +278,7 @@ def blend(proj, cur_games, k=20):
     """D9: per-game rates = w * this season's + (1 - w) * projected, w = n / (n + k), n = games played."""
     if cur_games.empty:  # fetch.py writes a header-only file before the season starts
         return proj
-    cols = STATS + RATES
+    cols = [c for c in STATS + RATES if c in cur_games]
     g = cur_games.groupby("player_id")
     n = g.size().reindex(proj.player_id).fillna(0).values[:, None]
     cur = g[cols].mean().reindex(proj.player_id).values
